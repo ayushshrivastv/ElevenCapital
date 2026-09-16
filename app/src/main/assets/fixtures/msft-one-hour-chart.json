@@ -1,0 +1,2292 @@
+{
+  "fixture": true,
+  "kind": "video-raster-digitized-price-trace",
+  "source": "references/reference-flow.mp4",
+  "sourceSha256": "91a66e9a01cc15f9fd70f74363f37a05422c8869b8060dfa4e1398741f4a5983",
+  "extractionSeekSeconds": "18.2",
+  "extractedPngSha256": "c506d34d01b088eff0f16316821e5b28b4d64ffdbe7c36615d5c5273a4374e05",
+  "extractionCommand": [
+    "ffmpeg",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-ss",
+    "18.2",
+    "-i",
+    "references/reference-flow.mp4",
+    "-frames:v",
+    "1",
+    "-y",
+    "one-hour.png"
+  ],
+  "sourceSize": [
+    392,
+    850
+  ],
+  "range": "ONE_HOUR",
+  "currencyCode": "USD",
+  "low": "496.25",
+  "high": "499.87",
+  "pricePixelBounds": {
+    "highY": 310,
+    "lowY": 425
+  },
+  "rangeChangeEvidence": {
+    "amount": "-0.0931",
+    "percent": "-0.01"
+  },
+  "anchorInstant": "2026-09-18T13:40:00Z",
+  "coordinateSpanSeconds": 3840,
+  "timeAxisEvidence": [
+    {
+      "label": "14:00",
+      "xPixel": 125
+    },
+    {
+      "label": "14:30",
+      "xPixel": 301
+    }
+  ],
+  "timestampNote": "Synthetic coordinate anchors approximate the visible time/date labels using fixture year 2026. Exact market timestamps and source chart year were not supplied; these timestamps are not recovered trades or feed events.",
+  "measurementNote": "Stable selected-range frame inspected before measurement. Per-column median green-line pixels in x8..379, y304..432 (green >150, green-red >12, green-blue >12, red >50). Price labels are mapped to raster line extrema; the white endpoint disk supplies the last point. No missing columns or smoothing. Prices are approximate screenshot geometry, not market data.",
+  "points": [
+    {
+      "xPixel": 8,
+      "yPixel": 372.5,
+      "offsetSeconds": 0,
+      "price": "497.9026"
+    },
+    {
+      "xPixel": 9,
+      "yPixel": 371.5,
+      "offsetSeconds": 10,
+      "price": "497.9341"
+    },
+    {
+      "xPixel": 10,
+      "yPixel": 368,
+      "offsetSeconds": 20,
+      "price": "498.0443"
+    },
+    {
+      "xPixel": 11,
+      "yPixel": 367,
+      "offsetSeconds": 31,
+      "price": "498.0757"
+    },
+    {
+      "xPixel": 12,
+      "yPixel": 362.5,
+      "offsetSeconds": 41,
+      "price": "498.2174"
+    },
+    {
+      "xPixel": 13,
+      "yPixel": 361.5,
+      "offsetSeconds": 51,
+      "price": "498.2489"
+    },
+    {
+      "xPixel": 14,
+      "yPixel": 357.5,
+      "offsetSeconds": 61,
+      "price": "498.3748"
+    },
+    {
+      "xPixel": 15,
+      "yPixel": 355.5,
+      "offsetSeconds": 72,
+      "price": "498.4377"
+    },
+    {
+      "xPixel": 16,
+      "yPixel": 352.5,
+      "offsetSeconds": 82,
+      "price": "498.5322"
+    },
+    {
+      "xPixel": 17,
+      "yPixel": 351,
+      "offsetSeconds": 92,
+      "price": "498.5794"
+    },
+    {
+      "xPixel": 18,
+      "yPixel": 347,
+      "offsetSeconds": 102,
+      "price": "498.7053"
+    },
+    {
+      "xPixel": 19,
+      "yPixel": 345.5,
+      "offsetSeconds": 113,
+      "price": "498.7525"
+    },
+    {
+      "xPixel": 20,
+      "yPixel": 344.5,
+      "offsetSeconds": 123,
+      "price": "498.7840"
+    },
+    {
+      "xPixel": 21,
+      "yPixel": 349.5,
+      "offsetSeconds": 133,
+      "price": "498.6266"
+    },
+    {
+      "xPixel": 22,
+      "yPixel": 355,
+      "offsetSeconds": 143,
+      "price": "498.4535"
+    },
+    {
+      "xPixel": 23,
+      "yPixel": 360.5,
+      "offsetSeconds": 154,
+      "price": "498.2803"
+    },
+    {
+      "xPixel": 24,
+      "yPixel": 366.5,
+      "offsetSeconds": 164,
+      "price": "498.0915"
+    },
+    {
+      "xPixel": 25,
+      "yPixel": 371,
+      "offsetSeconds": 174,
+      "price": "497.9498"
+    },
+    {
+      "xPixel": 26,
+      "yPixel": 374,
+      "offsetSeconds": 184,
+      "price": "497.8554"
+    },
+    {
+      "xPixel": 27,
+      "yPixel": 375.5,
+      "offsetSeconds": 195,
+      "price": "497.8082"
+    },
+    {
+      "xPixel": 28,
+      "yPixel": 376,
+      "offsetSeconds": 205,
+      "price": "497.7924"
+    },
+    {
+      "xPixel": 29,
+      "yPixel": 376.5,
+      "offsetSeconds": 215,
+      "price": "497.7767"
+    },
+    {
+      "xPixel": 30,
+      "yPixel": 376.5,
+      "offsetSeconds": 225,
+      "price": "497.7767"
+    },
+    {
+      "xPixel": 31,
+      "yPixel": 376,
+      "offsetSeconds": 235,
+      "price": "497.7924"
+    },
+    {
+      "xPixel": 32,
+      "yPixel": 373,
+      "offsetSeconds": 246,
+      "price": "497.8869"
+    },
+    {
+      "xPixel": 33,
+      "yPixel": 371,
+      "offsetSeconds": 256,
+      "price": "497.9498"
+    },
+    {
+      "xPixel": 34,
+      "yPixel": 362.5,
+      "offsetSeconds": 266,
+      "price": "498.2174"
+    },
+    {
+      "xPixel": 35,
+      "yPixel": 359.5,
+      "offsetSeconds": 276,
+      "price": "498.3118"
+    },
+    {
+      "xPixel": 36,
+      "yPixel": 352,
+      "offsetSeconds": 287,
+      "price": "498.5479"
+    },
+    {
+      "xPixel": 37,
+      "yPixel": 349,
+      "offsetSeconds": 297,
+      "price": "498.6423"
+    },
+    {
+      "xPixel": 38,
+      "yPixel": 344.5,
+      "offsetSeconds": 307,
+      "price": "498.7840"
+    },
+    {
+      "xPixel": 39,
+      "yPixel": 343.5,
+      "offsetSeconds": 317,
+      "price": "498.8155"
+    },
+    {
+      "xPixel": 40,
+      "yPixel": 343.5,
+      "offsetSeconds": 328,
+      "price": "498.8155"
+    },
+    {
+      "xPixel": 41,
+      "yPixel": 343.5,
+      "offsetSeconds": 338,
+      "price": "498.8155"
+    },
+    {
+      "xPixel": 42,
+      "yPixel": 343.5,
+      "offsetSeconds": 348,
+      "price": "498.8155"
+    },
+    {
+      "xPixel": 43,
+      "yPixel": 344.5,
+      "offsetSeconds": 358,
+      "price": "498.7840"
+    },
+    {
+      "xPixel": 44,
+      "yPixel": 347,
+      "offsetSeconds": 369,
+      "price": "498.7053"
+    },
+    {
+      "xPixel": 45,
+      "yPixel": 352.5,
+      "offsetSeconds": 379,
+      "price": "498.5322"
+    },
+    {
+      "xPixel": 46,
+      "yPixel": 358,
+      "offsetSeconds": 389,
+      "price": "498.3590"
+    },
+    {
+      "xPixel": 47,
+      "yPixel": 363,
+      "offsetSeconds": 399,
+      "price": "498.2017"
+    },
+    {
+      "xPixel": 48,
+      "yPixel": 368.5,
+      "offsetSeconds": 410,
+      "price": "498.0285"
+    },
+    {
+      "xPixel": 49,
+      "yPixel": 371.5,
+      "offsetSeconds": 420,
+      "price": "497.9341"
+    },
+    {
+      "xPixel": 50,
+      "yPixel": 375.5,
+      "offsetSeconds": 430,
+      "price": "497.8082"
+    },
+    {
+      "xPixel": 51,
+      "yPixel": 376.5,
+      "offsetSeconds": 440,
+      "price": "497.7767"
+    },
+    {
+      "xPixel": 52,
+      "yPixel": 378,
+      "offsetSeconds": 450,
+      "price": "497.7295"
+    },
+    {
+      "xPixel": 53,
+      "yPixel": 379,
+      "offsetSeconds": 461,
+      "price": "497.6980"
+    },
+    {
+      "xPixel": 54,
+      "yPixel": 380.5,
+      "offsetSeconds": 471,
+      "price": "497.6508"
+    },
+    {
+      "xPixel": 55,
+      "yPixel": 382,
+      "offsetSeconds": 481,
+      "price": "497.6036"
+    },
+    {
+      "xPixel": 56,
+      "yPixel": 383,
+      "offsetSeconds": 491,
+      "price": "497.5721"
+    },
+    {
+      "xPixel": 57,
+      "yPixel": 384,
+      "offsetSeconds": 502,
+      "price": "497.5406"
+    },
+    {
+      "xPixel": 58,
+      "yPixel": 385.5,
+      "offsetSeconds": 512,
+      "price": "497.4934"
+    },
+    {
+      "xPixel": 59,
+      "yPixel": 387,
+      "offsetSeconds": 522,
+      "price": "497.4462"
+    },
+    {
+      "xPixel": 60,
+      "yPixel": 388.5,
+      "offsetSeconds": 532,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 61,
+      "yPixel": 390,
+      "offsetSeconds": 543,
+      "price": "497.3517"
+    },
+    {
+      "xPixel": 62,
+      "yPixel": 392.5,
+      "offsetSeconds": 553,
+      "price": "497.2730"
+    },
+    {
+      "xPixel": 63,
+      "yPixel": 395,
+      "offsetSeconds": 563,
+      "price": "497.1943"
+    },
+    {
+      "xPixel": 64,
+      "yPixel": 397.5,
+      "offsetSeconds": 573,
+      "price": "497.1157"
+    },
+    {
+      "xPixel": 65,
+      "yPixel": 399.5,
+      "offsetSeconds": 584,
+      "price": "497.0527"
+    },
+    {
+      "xPixel": 66,
+      "yPixel": 402.5,
+      "offsetSeconds": 594,
+      "price": "496.9583"
+    },
+    {
+      "xPixel": 67,
+      "yPixel": 402.5,
+      "offsetSeconds": 604,
+      "price": "496.9583"
+    },
+    {
+      "xPixel": 68,
+      "yPixel": 396,
+      "offsetSeconds": 614,
+      "price": "497.1629"
+    },
+    {
+      "xPixel": 69,
+      "yPixel": 391,
+      "offsetSeconds": 625,
+      "price": "497.3203"
+    },
+    {
+      "xPixel": 70,
+      "yPixel": 383.5,
+      "offsetSeconds": 635,
+      "price": "497.5563"
+    },
+    {
+      "xPixel": 71,
+      "yPixel": 378.5,
+      "offsetSeconds": 645,
+      "price": "497.7137"
+    },
+    {
+      "xPixel": 72,
+      "yPixel": 372.5,
+      "offsetSeconds": 655,
+      "price": "497.9026"
+    },
+    {
+      "xPixel": 73,
+      "yPixel": 369.5,
+      "offsetSeconds": 665,
+      "price": "497.9970"
+    },
+    {
+      "xPixel": 74,
+      "yPixel": 368,
+      "offsetSeconds": 676,
+      "price": "498.0443"
+    },
+    {
+      "xPixel": 75,
+      "yPixel": 368,
+      "offsetSeconds": 686,
+      "price": "498.0443"
+    },
+    {
+      "xPixel": 76,
+      "yPixel": 367.5,
+      "offsetSeconds": 696,
+      "price": "498.0600"
+    },
+    {
+      "xPixel": 77,
+      "yPixel": 367.5,
+      "offsetSeconds": 706,
+      "price": "498.0600"
+    },
+    {
+      "xPixel": 78,
+      "yPixel": 366,
+      "offsetSeconds": 717,
+      "price": "498.1072"
+    },
+    {
+      "xPixel": 79,
+      "yPixel": 366,
+      "offsetSeconds": 727,
+      "price": "498.1072"
+    },
+    {
+      "xPixel": 80,
+      "yPixel": 358.5,
+      "offsetSeconds": 737,
+      "price": "498.3433"
+    },
+    {
+      "xPixel": 81,
+      "yPixel": 355.5,
+      "offsetSeconds": 747,
+      "price": "498.4377"
+    },
+    {
+      "xPixel": 82,
+      "yPixel": 347.5,
+      "offsetSeconds": 758,
+      "price": "498.6896"
+    },
+    {
+      "xPixel": 83,
+      "yPixel": 343.5,
+      "offsetSeconds": 768,
+      "price": "498.8155"
+    },
+    {
+      "xPixel": 84,
+      "yPixel": 337.5,
+      "offsetSeconds": 778,
+      "price": "499.0043"
+    },
+    {
+      "xPixel": 85,
+      "yPixel": 335,
+      "offsetSeconds": 788,
+      "price": "499.0830"
+    },
+    {
+      "xPixel": 86,
+      "yPixel": 334.5,
+      "offsetSeconds": 799,
+      "price": "499.0988"
+    },
+    {
+      "xPixel": 87,
+      "yPixel": 334.5,
+      "offsetSeconds": 809,
+      "price": "499.0988"
+    },
+    {
+      "xPixel": 88,
+      "yPixel": 334.5,
+      "offsetSeconds": 819,
+      "price": "499.0988"
+    },
+    {
+      "xPixel": 89,
+      "yPixel": 334.5,
+      "offsetSeconds": 829,
+      "price": "499.0988"
+    },
+    {
+      "xPixel": 90,
+      "yPixel": 334.5,
+      "offsetSeconds": 840,
+      "price": "499.0988"
+    },
+    {
+      "xPixel": 91,
+      "yPixel": 335,
+      "offsetSeconds": 850,
+      "price": "499.0830"
+    },
+    {
+      "xPixel": 92,
+      "yPixel": 335.5,
+      "offsetSeconds": 860,
+      "price": "499.0673"
+    },
+    {
+      "xPixel": 93,
+      "yPixel": 335.5,
+      "offsetSeconds": 870,
+      "price": "499.0673"
+    },
+    {
+      "xPixel": 94,
+      "yPixel": 336.5,
+      "offsetSeconds": 880,
+      "price": "499.0358"
+    },
+    {
+      "xPixel": 95,
+      "yPixel": 336.5,
+      "offsetSeconds": 891,
+      "price": "499.0358"
+    },
+    {
+      "xPixel": 96,
+      "yPixel": 339,
+      "offsetSeconds": 901,
+      "price": "498.9571"
+    },
+    {
+      "xPixel": 97,
+      "yPixel": 342.5,
+      "offsetSeconds": 911,
+      "price": "498.8470"
+    },
+    {
+      "xPixel": 98,
+      "yPixel": 348,
+      "offsetSeconds": 921,
+      "price": "498.6738"
+    },
+    {
+      "xPixel": 99,
+      "yPixel": 352.5,
+      "offsetSeconds": 932,
+      "price": "498.5322"
+    },
+    {
+      "xPixel": 100,
+      "yPixel": 359,
+      "offsetSeconds": 942,
+      "price": "498.3276"
+    },
+    {
+      "xPixel": 101,
+      "yPixel": 364,
+      "offsetSeconds": 952,
+      "price": "498.1702"
+    },
+    {
+      "xPixel": 102,
+      "yPixel": 367,
+      "offsetSeconds": 962,
+      "price": "498.0757"
+    },
+    {
+      "xPixel": 103,
+      "yPixel": 368.5,
+      "offsetSeconds": 973,
+      "price": "498.0285"
+    },
+    {
+      "xPixel": 104,
+      "yPixel": 368.5,
+      "offsetSeconds": 983,
+      "price": "498.0285"
+    },
+    {
+      "xPixel": 105,
+      "yPixel": 369,
+      "offsetSeconds": 993,
+      "price": "498.0128"
+    },
+    {
+      "xPixel": 106,
+      "yPixel": 369.5,
+      "offsetSeconds": 1003,
+      "price": "497.9970"
+    },
+    {
+      "xPixel": 107,
+      "yPixel": 369.5,
+      "offsetSeconds": 1014,
+      "price": "497.9970"
+    },
+    {
+      "xPixel": 108,
+      "yPixel": 369.5,
+      "offsetSeconds": 1024,
+      "price": "497.9970"
+    },
+    {
+      "xPixel": 109,
+      "yPixel": 370,
+      "offsetSeconds": 1034,
+      "price": "497.9813"
+    },
+    {
+      "xPixel": 110,
+      "yPixel": 371,
+      "offsetSeconds": 1044,
+      "price": "497.9498"
+    },
+    {
+      "xPixel": 111,
+      "yPixel": 371.5,
+      "offsetSeconds": 1055,
+      "price": "497.9341"
+    },
+    {
+      "xPixel": 112,
+      "yPixel": 372,
+      "offsetSeconds": 1065,
+      "price": "497.9183"
+    },
+    {
+      "xPixel": 113,
+      "yPixel": 372.5,
+      "offsetSeconds": 1075,
+      "price": "497.9026"
+    },
+    {
+      "xPixel": 114,
+      "yPixel": 373.5,
+      "offsetSeconds": 1085,
+      "price": "497.8711"
+    },
+    {
+      "xPixel": 115,
+      "yPixel": 373.5,
+      "offsetSeconds": 1095,
+      "price": "497.8711"
+    },
+    {
+      "xPixel": 116,
+      "yPixel": 373.5,
+      "offsetSeconds": 1106,
+      "price": "497.8711"
+    },
+    {
+      "xPixel": 117,
+      "yPixel": 374,
+      "offsetSeconds": 1116,
+      "price": "497.8554"
+    },
+    {
+      "xPixel": 118,
+      "yPixel": 374.5,
+      "offsetSeconds": 1126,
+      "price": "497.8397"
+    },
+    {
+      "xPixel": 119,
+      "yPixel": 374.5,
+      "offsetSeconds": 1136,
+      "price": "497.8397"
+    },
+    {
+      "xPixel": 120,
+      "yPixel": 374.5,
+      "offsetSeconds": 1147,
+      "price": "497.8397"
+    },
+    {
+      "xPixel": 121,
+      "yPixel": 375.5,
+      "offsetSeconds": 1157,
+      "price": "497.8082"
+    },
+    {
+      "xPixel": 122,
+      "yPixel": 375.5,
+      "offsetSeconds": 1167,
+      "price": "497.8082"
+    },
+    {
+      "xPixel": 123,
+      "yPixel": 376.5,
+      "offsetSeconds": 1177,
+      "price": "497.7767"
+    },
+    {
+      "xPixel": 124,
+      "yPixel": 376.5,
+      "offsetSeconds": 1188,
+      "price": "497.7767"
+    },
+    {
+      "xPixel": 125,
+      "yPixel": 377.5,
+      "offsetSeconds": 1198,
+      "price": "497.7452"
+    },
+    {
+      "xPixel": 126,
+      "yPixel": 377.5,
+      "offsetSeconds": 1208,
+      "price": "497.7452"
+    },
+    {
+      "xPixel": 127,
+      "yPixel": 377.5,
+      "offsetSeconds": 1218,
+      "price": "497.7452"
+    },
+    {
+      "xPixel": 128,
+      "yPixel": 378,
+      "offsetSeconds": 1229,
+      "price": "497.7295"
+    },
+    {
+      "xPixel": 129,
+      "yPixel": 378,
+      "offsetSeconds": 1239,
+      "price": "497.7295"
+    },
+    {
+      "xPixel": 130,
+      "yPixel": 378.5,
+      "offsetSeconds": 1249,
+      "price": "497.7137"
+    },
+    {
+      "xPixel": 131,
+      "yPixel": 378.5,
+      "offsetSeconds": 1259,
+      "price": "497.7137"
+    },
+    {
+      "xPixel": 132,
+      "yPixel": 378.5,
+      "offsetSeconds": 1270,
+      "price": "497.7137"
+    },
+    {
+      "xPixel": 133,
+      "yPixel": 378.5,
+      "offsetSeconds": 1280,
+      "price": "497.7137"
+    },
+    {
+      "xPixel": 134,
+      "yPixel": 378.5,
+      "offsetSeconds": 1290,
+      "price": "497.7137"
+    },
+    {
+      "xPixel": 135,
+      "yPixel": 378.5,
+      "offsetSeconds": 1300,
+      "price": "497.7137"
+    },
+    {
+      "xPixel": 136,
+      "yPixel": 378.5,
+      "offsetSeconds": 1310,
+      "price": "497.7137"
+    },
+    {
+      "xPixel": 137,
+      "yPixel": 379.5,
+      "offsetSeconds": 1321,
+      "price": "497.6823"
+    },
+    {
+      "xPixel": 138,
+      "yPixel": 379.5,
+      "offsetSeconds": 1331,
+      "price": "497.6823"
+    },
+    {
+      "xPixel": 139,
+      "yPixel": 379.5,
+      "offsetSeconds": 1341,
+      "price": "497.6823"
+    },
+    {
+      "xPixel": 140,
+      "yPixel": 379.5,
+      "offsetSeconds": 1351,
+      "price": "497.6823"
+    },
+    {
+      "xPixel": 141,
+      "yPixel": 379.5,
+      "offsetSeconds": 1362,
+      "price": "497.6823"
+    },
+    {
+      "xPixel": 142,
+      "yPixel": 380,
+      "offsetSeconds": 1372,
+      "price": "497.6665"
+    },
+    {
+      "xPixel": 143,
+      "yPixel": 380.5,
+      "offsetSeconds": 1382,
+      "price": "497.6508"
+    },
+    {
+      "xPixel": 144,
+      "yPixel": 380.5,
+      "offsetSeconds": 1392,
+      "price": "497.6508"
+    },
+    {
+      "xPixel": 145,
+      "yPixel": 380.5,
+      "offsetSeconds": 1403,
+      "price": "497.6508"
+    },
+    {
+      "xPixel": 146,
+      "yPixel": 380.5,
+      "offsetSeconds": 1413,
+      "price": "497.6508"
+    },
+    {
+      "xPixel": 147,
+      "yPixel": 380.5,
+      "offsetSeconds": 1423,
+      "price": "497.6508"
+    },
+    {
+      "xPixel": 148,
+      "yPixel": 380.5,
+      "offsetSeconds": 1433,
+      "price": "497.6508"
+    },
+    {
+      "xPixel": 149,
+      "yPixel": 380.5,
+      "offsetSeconds": 1444,
+      "price": "497.6508"
+    },
+    {
+      "xPixel": 150,
+      "yPixel": 381,
+      "offsetSeconds": 1454,
+      "price": "497.6350"
+    },
+    {
+      "xPixel": 151,
+      "yPixel": 381.5,
+      "offsetSeconds": 1464,
+      "price": "497.6193"
+    },
+    {
+      "xPixel": 152,
+      "yPixel": 381.5,
+      "offsetSeconds": 1474,
+      "price": "497.6193"
+    },
+    {
+      "xPixel": 153,
+      "yPixel": 381.5,
+      "offsetSeconds": 1485,
+      "price": "497.6193"
+    },
+    {
+      "xPixel": 154,
+      "yPixel": 382.5,
+      "offsetSeconds": 1495,
+      "price": "497.5878"
+    },
+    {
+      "xPixel": 155,
+      "yPixel": 383,
+      "offsetSeconds": 1505,
+      "price": "497.5721"
+    },
+    {
+      "xPixel": 156,
+      "yPixel": 383.5,
+      "offsetSeconds": 1515,
+      "price": "497.5563"
+    },
+    {
+      "xPixel": 157,
+      "yPixel": 384.5,
+      "offsetSeconds": 1525,
+      "price": "497.5249"
+    },
+    {
+      "xPixel": 158,
+      "yPixel": 385,
+      "offsetSeconds": 1536,
+      "price": "497.5091"
+    },
+    {
+      "xPixel": 159,
+      "yPixel": 386,
+      "offsetSeconds": 1546,
+      "price": "497.4777"
+    },
+    {
+      "xPixel": 160,
+      "yPixel": 387,
+      "offsetSeconds": 1556,
+      "price": "497.4462"
+    },
+    {
+      "xPixel": 161,
+      "yPixel": 387,
+      "offsetSeconds": 1566,
+      "price": "497.4462"
+    },
+    {
+      "xPixel": 162,
+      "yPixel": 386.5,
+      "offsetSeconds": 1577,
+      "price": "497.4619"
+    },
+    {
+      "xPixel": 163,
+      "yPixel": 386.5,
+      "offsetSeconds": 1587,
+      "price": "497.4619"
+    },
+    {
+      "xPixel": 164,
+      "yPixel": 386,
+      "offsetSeconds": 1597,
+      "price": "497.4777"
+    },
+    {
+      "xPixel": 165,
+      "yPixel": 386,
+      "offsetSeconds": 1607,
+      "price": "497.4777"
+    },
+    {
+      "xPixel": 166,
+      "yPixel": 384.5,
+      "offsetSeconds": 1618,
+      "price": "497.5249"
+    },
+    {
+      "xPixel": 167,
+      "yPixel": 384.5,
+      "offsetSeconds": 1628,
+      "price": "497.5249"
+    },
+    {
+      "xPixel": 168,
+      "yPixel": 385,
+      "offsetSeconds": 1638,
+      "price": "497.5091"
+    },
+    {
+      "xPixel": 169,
+      "yPixel": 385.5,
+      "offsetSeconds": 1648,
+      "price": "497.4934"
+    },
+    {
+      "xPixel": 170,
+      "yPixel": 385.5,
+      "offsetSeconds": 1659,
+      "price": "497.4934"
+    },
+    {
+      "xPixel": 171,
+      "yPixel": 385.5,
+      "offsetSeconds": 1669,
+      "price": "497.4934"
+    },
+    {
+      "xPixel": 172,
+      "yPixel": 385.5,
+      "offsetSeconds": 1679,
+      "price": "497.4934"
+    },
+    {
+      "xPixel": 173,
+      "yPixel": 386,
+      "offsetSeconds": 1689,
+      "price": "497.4777"
+    },
+    {
+      "xPixel": 174,
+      "yPixel": 386.5,
+      "offsetSeconds": 1700,
+      "price": "497.4619"
+    },
+    {
+      "xPixel": 175,
+      "yPixel": 387.5,
+      "offsetSeconds": 1710,
+      "price": "497.4304"
+    },
+    {
+      "xPixel": 176,
+      "yPixel": 388,
+      "offsetSeconds": 1720,
+      "price": "497.4147"
+    },
+    {
+      "xPixel": 177,
+      "yPixel": 388.5,
+      "offsetSeconds": 1730,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 178,
+      "yPixel": 389,
+      "offsetSeconds": 1740,
+      "price": "497.3832"
+    },
+    {
+      "xPixel": 179,
+      "yPixel": 389.5,
+      "offsetSeconds": 1751,
+      "price": "497.3675"
+    },
+    {
+      "xPixel": 180,
+      "yPixel": 389.5,
+      "offsetSeconds": 1761,
+      "price": "497.3675"
+    },
+    {
+      "xPixel": 181,
+      "yPixel": 389.5,
+      "offsetSeconds": 1771,
+      "price": "497.3675"
+    },
+    {
+      "xPixel": 182,
+      "yPixel": 389.5,
+      "offsetSeconds": 1781,
+      "price": "497.3675"
+    },
+    {
+      "xPixel": 183,
+      "yPixel": 389.5,
+      "offsetSeconds": 1792,
+      "price": "497.3675"
+    },
+    {
+      "xPixel": 184,
+      "yPixel": 390,
+      "offsetSeconds": 1802,
+      "price": "497.3517"
+    },
+    {
+      "xPixel": 185,
+      "yPixel": 390,
+      "offsetSeconds": 1812,
+      "price": "497.3517"
+    },
+    {
+      "xPixel": 186,
+      "yPixel": 390,
+      "offsetSeconds": 1822,
+      "price": "497.3517"
+    },
+    {
+      "xPixel": 187,
+      "yPixel": 390,
+      "offsetSeconds": 1833,
+      "price": "497.3517"
+    },
+    {
+      "xPixel": 188,
+      "yPixel": 390,
+      "offsetSeconds": 1843,
+      "price": "497.3517"
+    },
+    {
+      "xPixel": 189,
+      "yPixel": 390,
+      "offsetSeconds": 1853,
+      "price": "497.3517"
+    },
+    {
+      "xPixel": 190,
+      "yPixel": 390,
+      "offsetSeconds": 1863,
+      "price": "497.3517"
+    },
+    {
+      "xPixel": 191,
+      "yPixel": 390,
+      "offsetSeconds": 1874,
+      "price": "497.3517"
+    },
+    {
+      "xPixel": 192,
+      "yPixel": 389.5,
+      "offsetSeconds": 1884,
+      "price": "497.3675"
+    },
+    {
+      "xPixel": 193,
+      "yPixel": 388.5,
+      "offsetSeconds": 1894,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 194,
+      "yPixel": 388.5,
+      "offsetSeconds": 1904,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 195,
+      "yPixel": 388.5,
+      "offsetSeconds": 1915,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 196,
+      "yPixel": 383.5,
+      "offsetSeconds": 1925,
+      "price": "497.5563"
+    },
+    {
+      "xPixel": 197,
+      "yPixel": 381.5,
+      "offsetSeconds": 1935,
+      "price": "497.6193"
+    },
+    {
+      "xPixel": 198,
+      "yPixel": 372,
+      "offsetSeconds": 1945,
+      "price": "497.9183"
+    },
+    {
+      "xPixel": 199,
+      "yPixel": 366,
+      "offsetSeconds": 1955,
+      "price": "498.1072"
+    },
+    {
+      "xPixel": 200,
+      "yPixel": 358.5,
+      "offsetSeconds": 1966,
+      "price": "498.3433"
+    },
+    {
+      "xPixel": 201,
+      "yPixel": 355,
+      "offsetSeconds": 1976,
+      "price": "498.4535"
+    },
+    {
+      "xPixel": 202,
+      "yPixel": 344.5,
+      "offsetSeconds": 1986,
+      "price": "498.7840"
+    },
+    {
+      "xPixel": 203,
+      "yPixel": 339.5,
+      "offsetSeconds": 1996,
+      "price": "498.9414"
+    },
+    {
+      "xPixel": 204,
+      "yPixel": 331.5,
+      "offsetSeconds": 2007,
+      "price": "499.1932"
+    },
+    {
+      "xPixel": 205,
+      "yPixel": 325.5,
+      "offsetSeconds": 2017,
+      "price": "499.3821"
+    },
+    {
+      "xPixel": 206,
+      "yPixel": 318.5,
+      "offsetSeconds": 2027,
+      "price": "499.6024"
+    },
+    {
+      "xPixel": 207,
+      "yPixel": 317.5,
+      "offsetSeconds": 2037,
+      "price": "499.6339"
+    },
+    {
+      "xPixel": 208,
+      "yPixel": 326.5,
+      "offsetSeconds": 2048,
+      "price": "499.3506"
+    },
+    {
+      "xPixel": 209,
+      "yPixel": 338.5,
+      "offsetSeconds": 2058,
+      "price": "498.9729"
+    },
+    {
+      "xPixel": 210,
+      "yPixel": 362,
+      "offsetSeconds": 2068,
+      "price": "498.2331"
+    },
+    {
+      "xPixel": 211,
+      "yPixel": 377,
+      "offsetSeconds": 2078,
+      "price": "497.7610"
+    },
+    {
+      "xPixel": 212,
+      "yPixel": 399,
+      "offsetSeconds": 2089,
+      "price": "497.0684"
+    },
+    {
+      "xPixel": 213,
+      "yPixel": 408,
+      "offsetSeconds": 2099,
+      "price": "496.7851"
+    },
+    {
+      "xPixel": 214,
+      "yPixel": 419,
+      "offsetSeconds": 2109,
+      "price": "496.4389"
+    },
+    {
+      "xPixel": 215,
+      "yPixel": 419.5,
+      "offsetSeconds": 2119,
+      "price": "496.4231"
+    },
+    {
+      "xPixel": 216,
+      "yPixel": 420.5,
+      "offsetSeconds": 2130,
+      "price": "496.3917"
+    },
+    {
+      "xPixel": 217,
+      "yPixel": 420.5,
+      "offsetSeconds": 2140,
+      "price": "496.3917"
+    },
+    {
+      "xPixel": 218,
+      "yPixel": 421,
+      "offsetSeconds": 2150,
+      "price": "496.3759"
+    },
+    {
+      "xPixel": 219,
+      "yPixel": 420.5,
+      "offsetSeconds": 2160,
+      "price": "496.3917"
+    },
+    {
+      "xPixel": 220,
+      "yPixel": 415.5,
+      "offsetSeconds": 2170,
+      "price": "496.5490"
+    },
+    {
+      "xPixel": 221,
+      "yPixel": 410.5,
+      "offsetSeconds": 2181,
+      "price": "496.7064"
+    },
+    {
+      "xPixel": 222,
+      "yPixel": 404.5,
+      "offsetSeconds": 2191,
+      "price": "496.8953"
+    },
+    {
+      "xPixel": 223,
+      "yPixel": 400,
+      "offsetSeconds": 2201,
+      "price": "497.0370"
+    },
+    {
+      "xPixel": 224,
+      "yPixel": 393,
+      "offsetSeconds": 2211,
+      "price": "497.2573"
+    },
+    {
+      "xPixel": 225,
+      "yPixel": 390.5,
+      "offsetSeconds": 2222,
+      "price": "497.3360"
+    },
+    {
+      "xPixel": 226,
+      "yPixel": 388.5,
+      "offsetSeconds": 2232,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 227,
+      "yPixel": 388.5,
+      "offsetSeconds": 2242,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 228,
+      "yPixel": 388.5,
+      "offsetSeconds": 2252,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 229,
+      "yPixel": 388.5,
+      "offsetSeconds": 2263,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 230,
+      "yPixel": 388.5,
+      "offsetSeconds": 2273,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 231,
+      "yPixel": 385.5,
+      "offsetSeconds": 2283,
+      "price": "497.4934"
+    },
+    {
+      "xPixel": 232,
+      "yPixel": 382,
+      "offsetSeconds": 2293,
+      "price": "497.6036"
+    },
+    {
+      "xPixel": 233,
+      "yPixel": 377.5,
+      "offsetSeconds": 2304,
+      "price": "497.7452"
+    },
+    {
+      "xPixel": 234,
+      "yPixel": 372,
+      "offsetSeconds": 2314,
+      "price": "497.9183"
+    },
+    {
+      "xPixel": 235,
+      "yPixel": 368.5,
+      "offsetSeconds": 2324,
+      "price": "498.0285"
+    },
+    {
+      "xPixel": 236,
+      "yPixel": 361,
+      "offsetSeconds": 2334,
+      "price": "498.2646"
+    },
+    {
+      "xPixel": 237,
+      "yPixel": 358.5,
+      "offsetSeconds": 2345,
+      "price": "498.3433"
+    },
+    {
+      "xPixel": 238,
+      "yPixel": 350.5,
+      "offsetSeconds": 2355,
+      "price": "498.5951"
+    },
+    {
+      "xPixel": 239,
+      "yPixel": 345,
+      "offsetSeconds": 2365,
+      "price": "498.7683"
+    },
+    {
+      "xPixel": 240,
+      "yPixel": 338.5,
+      "offsetSeconds": 2375,
+      "price": "498.9729"
+    },
+    {
+      "xPixel": 241,
+      "yPixel": 335.5,
+      "offsetSeconds": 2385,
+      "price": "499.0673"
+    },
+    {
+      "xPixel": 242,
+      "yPixel": 329.5,
+      "offsetSeconds": 2396,
+      "price": "499.2562"
+    },
+    {
+      "xPixel": 243,
+      "yPixel": 330,
+      "offsetSeconds": 2406,
+      "price": "499.2404"
+    },
+    {
+      "xPixel": 244,
+      "yPixel": 334,
+      "offsetSeconds": 2416,
+      "price": "499.1145"
+    },
+    {
+      "xPixel": 245,
+      "yPixel": 339.5,
+      "offsetSeconds": 2426,
+      "price": "498.9414"
+    },
+    {
+      "xPixel": 246,
+      "yPixel": 345,
+      "offsetSeconds": 2437,
+      "price": "498.7683"
+    },
+    {
+      "xPixel": 247,
+      "yPixel": 350,
+      "offsetSeconds": 2447,
+      "price": "498.6109"
+    },
+    {
+      "xPixel": 248,
+      "yPixel": 357.5,
+      "offsetSeconds": 2457,
+      "price": "498.3748"
+    },
+    {
+      "xPixel": 249,
+      "yPixel": 364.5,
+      "offsetSeconds": 2467,
+      "price": "498.1544"
+    },
+    {
+      "xPixel": 250,
+      "yPixel": 374.5,
+      "offsetSeconds": 2478,
+      "price": "497.8397"
+    },
+    {
+      "xPixel": 251,
+      "yPixel": 382.5,
+      "offsetSeconds": 2488,
+      "price": "497.5878"
+    },
+    {
+      "xPixel": 252,
+      "yPixel": 394,
+      "offsetSeconds": 2498,
+      "price": "497.2258"
+    },
+    {
+      "xPixel": 253,
+      "yPixel": 404,
+      "offsetSeconds": 2508,
+      "price": "496.9110"
+    },
+    {
+      "xPixel": 254,
+      "yPixel": 409.5,
+      "offsetSeconds": 2519,
+      "price": "496.7379"
+    },
+    {
+      "xPixel": 255,
+      "yPixel": 410.5,
+      "offsetSeconds": 2529,
+      "price": "496.7064"
+    },
+    {
+      "xPixel": 256,
+      "yPixel": 407,
+      "offsetSeconds": 2539,
+      "price": "496.8166"
+    },
+    {
+      "xPixel": 257,
+      "yPixel": 404.5,
+      "offsetSeconds": 2549,
+      "price": "496.8953"
+    },
+    {
+      "xPixel": 258,
+      "yPixel": 399,
+      "offsetSeconds": 2560,
+      "price": "497.0684"
+    },
+    {
+      "xPixel": 259,
+      "yPixel": 395.5,
+      "offsetSeconds": 2570,
+      "price": "497.1786"
+    },
+    {
+      "xPixel": 260,
+      "yPixel": 393,
+      "offsetSeconds": 2580,
+      "price": "497.2573"
+    },
+    {
+      "xPixel": 261,
+      "yPixel": 391.5,
+      "offsetSeconds": 2590,
+      "price": "497.3045"
+    },
+    {
+      "xPixel": 262,
+      "yPixel": 391.5,
+      "offsetSeconds": 2600,
+      "price": "497.3045"
+    },
+    {
+      "xPixel": 263,
+      "yPixel": 391.5,
+      "offsetSeconds": 2611,
+      "price": "497.3045"
+    },
+    {
+      "xPixel": 264,
+      "yPixel": 391.5,
+      "offsetSeconds": 2621,
+      "price": "497.3045"
+    },
+    {
+      "xPixel": 265,
+      "yPixel": 391,
+      "offsetSeconds": 2631,
+      "price": "497.3203"
+    },
+    {
+      "xPixel": 266,
+      "yPixel": 388.5,
+      "offsetSeconds": 2641,
+      "price": "497.3990"
+    },
+    {
+      "xPixel": 267,
+      "yPixel": 387,
+      "offsetSeconds": 2652,
+      "price": "497.4462"
+    },
+    {
+      "xPixel": 268,
+      "yPixel": 379.5,
+      "offsetSeconds": 2662,
+      "price": "497.6823"
+    },
+    {
+      "xPixel": 269,
+      "yPixel": 375.5,
+      "offsetSeconds": 2672,
+      "price": "497.8082"
+    },
+    {
+      "xPixel": 270,
+      "yPixel": 368,
+      "offsetSeconds": 2682,
+      "price": "498.0443"
+    },
+    {
+      "xPixel": 271,
+      "yPixel": 364,
+      "offsetSeconds": 2693,
+      "price": "498.1702"
+    },
+    {
+      "xPixel": 272,
+      "yPixel": 360.5,
+      "offsetSeconds": 2703,
+      "price": "498.2803"
+    },
+    {
+      "xPixel": 273,
+      "yPixel": 361,
+      "offsetSeconds": 2713,
+      "price": "498.2646"
+    },
+    {
+      "xPixel": 274,
+      "yPixel": 362,
+      "offsetSeconds": 2723,
+      "price": "498.2331"
+    },
+    {
+      "xPixel": 275,
+      "yPixel": 363,
+      "offsetSeconds": 2734,
+      "price": "498.2017"
+    },
+    {
+      "xPixel": 276,
+      "yPixel": 364.5,
+      "offsetSeconds": 2744,
+      "price": "498.1544"
+    },
+    {
+      "xPixel": 277,
+      "yPixel": 366.5,
+      "offsetSeconds": 2754,
+      "price": "498.0915"
+    },
+    {
+      "xPixel": 278,
+      "yPixel": 368,
+      "offsetSeconds": 2764,
+      "price": "498.0443"
+    },
+    {
+      "xPixel": 279,
+      "yPixel": 370,
+      "offsetSeconds": 2775,
+      "price": "497.9813"
+    },
+    {
+      "xPixel": 280,
+      "yPixel": 372.5,
+      "offsetSeconds": 2785,
+      "price": "497.9026"
+    },
+    {
+      "xPixel": 281,
+      "yPixel": 375.5,
+      "offsetSeconds": 2795,
+      "price": "497.8082"
+    },
+    {
+      "xPixel": 282,
+      "yPixel": 378,
+      "offsetSeconds": 2805,
+      "price": "497.7295"
+    },
+    {
+      "xPixel": 283,
+      "yPixel": 380.5,
+      "offsetSeconds": 2815,
+      "price": "497.6508"
+    },
+    {
+      "xPixel": 284,
+      "yPixel": 380,
+      "offsetSeconds": 2826,
+      "price": "497.6665"
+    },
+    {
+      "xPixel": 285,
+      "yPixel": 377.5,
+      "offsetSeconds": 2836,
+      "price": "497.7452"
+    },
+    {
+      "xPixel": 286,
+      "yPixel": 373,
+      "offsetSeconds": 2846,
+      "price": "497.8869"
+    },
+    {
+      "xPixel": 287,
+      "yPixel": 370.5,
+      "offsetSeconds": 2856,
+      "price": "497.9656"
+    },
+    {
+      "xPixel": 288,
+      "yPixel": 367,
+      "offsetSeconds": 2867,
+      "price": "498.0757"
+    },
+    {
+      "xPixel": 289,
+      "yPixel": 364.5,
+      "offsetSeconds": 2877,
+      "price": "498.1544"
+    },
+    {
+      "xPixel": 290,
+      "yPixel": 367,
+      "offsetSeconds": 2887,
+      "price": "498.0757"
+    },
+    {
+      "xPixel": 291,
+      "yPixel": 370,
+      "offsetSeconds": 2897,
+      "price": "497.9813"
+    },
+    {
+      "xPixel": 292,
+      "yPixel": 374.5,
+      "offsetSeconds": 2908,
+      "price": "497.8397"
+    },
+    {
+      "xPixel": 293,
+      "yPixel": 379,
+      "offsetSeconds": 2918,
+      "price": "497.6980"
+    },
+    {
+      "xPixel": 294,
+      "yPixel": 382.5,
+      "offsetSeconds": 2928,
+      "price": "497.5878"
+    },
+    {
+      "xPixel": 295,
+      "yPixel": 384.5,
+      "offsetSeconds": 2938,
+      "price": "497.5249"
+    },
+    {
+      "xPixel": 296,
+      "yPixel": 382.5,
+      "offsetSeconds": 2949,
+      "price": "497.5878"
+    },
+    {
+      "xPixel": 297,
+      "yPixel": 379.5,
+      "offsetSeconds": 2959,
+      "price": "497.6823"
+    },
+    {
+      "xPixel": 298,
+      "yPixel": 374,
+      "offsetSeconds": 2969,
+      "price": "497.8554"
+    },
+    {
+      "xPixel": 299,
+      "yPixel": 372,
+      "offsetSeconds": 2979,
+      "price": "497.9183"
+    },
+    {
+      "xPixel": 300,
+      "yPixel": 364.5,
+      "offsetSeconds": 2990,
+      "price": "498.1544"
+    },
+    {
+      "xPixel": 301,
+      "yPixel": 363.5,
+      "offsetSeconds": 3000,
+      "price": "498.1859"
+    },
+    {
+      "xPixel": 302,
+      "yPixel": 367,
+      "offsetSeconds": 3010,
+      "price": "498.0757"
+    },
+    {
+      "xPixel": 303,
+      "yPixel": 373,
+      "offsetSeconds": 3020,
+      "price": "497.8869"
+    },
+    {
+      "xPixel": 304,
+      "yPixel": 379,
+      "offsetSeconds": 3030,
+      "price": "497.6980"
+    },
+    {
+      "xPixel": 305,
+      "yPixel": 385,
+      "offsetSeconds": 3041,
+      "price": "497.5091"
+    },
+    {
+      "xPixel": 306,
+      "yPixel": 392,
+      "offsetSeconds": 3051,
+      "price": "497.2888"
+    },
+    {
+      "xPixel": 307,
+      "yPixel": 394.5,
+      "offsetSeconds": 3061,
+      "price": "497.2101"
+    },
+    {
+      "xPixel": 308,
+      "yPixel": 395,
+      "offsetSeconds": 3071,
+      "price": "497.1943"
+    },
+    {
+      "xPixel": 309,
+      "yPixel": 394.5,
+      "offsetSeconds": 3082,
+      "price": "497.2101"
+    },
+    {
+      "xPixel": 310,
+      "yPixel": 392,
+      "offsetSeconds": 3092,
+      "price": "497.2888"
+    },
+    {
+      "xPixel": 311,
+      "yPixel": 391,
+      "offsetSeconds": 3102,
+      "price": "497.3203"
+    },
+    {
+      "xPixel": 312,
+      "yPixel": 388,
+      "offsetSeconds": 3112,
+      "price": "497.4147"
+    },
+    {
+      "xPixel": 313,
+      "yPixel": 385.5,
+      "offsetSeconds": 3123,
+      "price": "497.4934"
+    },
+    {
+      "xPixel": 314,
+      "yPixel": 371,
+      "offsetSeconds": 3133,
+      "price": "497.9498"
+    },
+    {
+      "xPixel": 315,
+      "yPixel": 361,
+      "offsetSeconds": 3143,
+      "price": "498.2646"
+    },
+    {
+      "xPixel": 316,
+      "yPixel": 345,
+      "offsetSeconds": 3153,
+      "price": "498.7683"
+    },
+    {
+      "xPixel": 317,
+      "yPixel": 335.5,
+      "offsetSeconds": 3164,
+      "price": "499.0673"
+    },
+    {
+      "xPixel": 318,
+      "yPixel": 322,
+      "offsetSeconds": 3174,
+      "price": "499.4923"
+    },
+    {
+      "xPixel": 319,
+      "yPixel": 317.5,
+      "offsetSeconds": 3184,
+      "price": "499.6339"
+    },
+    {
+      "xPixel": 320,
+      "yPixel": 322.5,
+      "offsetSeconds": 3194,
+      "price": "499.4765"
+    },
+    {
+      "xPixel": 321,
+      "yPixel": 329.5,
+      "offsetSeconds": 3205,
+      "price": "499.2562"
+    },
+    {
+      "xPixel": 322,
+      "yPixel": 338,
+      "offsetSeconds": 3215,
+      "price": "498.9886"
+    },
+    {
+      "xPixel": 323,
+      "yPixel": 344,
+      "offsetSeconds": 3225,
+      "price": "498.7997"
+    },
+    {
+      "xPixel": 324,
+      "yPixel": 350.5,
+      "offsetSeconds": 3235,
+      "price": "498.5951"
+    },
+    {
+      "xPixel": 325,
+      "yPixel": 354.5,
+      "offsetSeconds": 3245,
+      "price": "498.4692"
+    },
+    {
+      "xPixel": 326,
+      "yPixel": 354.5,
+      "offsetSeconds": 3256,
+      "price": "498.4692"
+    },
+    {
+      "xPixel": 327,
+      "yPixel": 354.5,
+      "offsetSeconds": 3266,
+      "price": "498.4692"
+    },
+    {
+      "xPixel": 328,
+      "yPixel": 353.5,
+      "offsetSeconds": 3276,
+      "price": "498.5007"
+    },
+    {
+      "xPixel": 329,
+      "yPixel": 353,
+      "offsetSeconds": 3286,
+      "price": "498.5164"
+    },
+    {
+      "xPixel": 330,
+      "yPixel": 352.5,
+      "offsetSeconds": 3297,
+      "price": "498.5322"
+    },
+    {
+      "xPixel": 331,
+      "yPixel": 352,
+      "offsetSeconds": 3307,
+      "price": "498.5479"
+    },
+    {
+      "xPixel": 332,
+      "yPixel": 351.5,
+      "offsetSeconds": 3317,
+      "price": "498.5637"
+    },
+    {
+      "xPixel": 333,
+      "yPixel": 351,
+      "offsetSeconds": 3327,
+      "price": "498.5794"
+    },
+    {
+      "xPixel": 334,
+      "yPixel": 350.5,
+      "offsetSeconds": 3338,
+      "price": "498.5951"
+    },
+    {
+      "xPixel": 335,
+      "yPixel": 350.5,
+      "offsetSeconds": 3348,
+      "price": "498.5951"
+    },
+    {
+      "xPixel": 336,
+      "yPixel": 352,
+      "offsetSeconds": 3358,
+      "price": "498.5479"
+    },
+    {
+      "xPixel": 337,
+      "yPixel": 353.5,
+      "offsetSeconds": 3368,
+      "price": "498.5007"
+    },
+    {
+      "xPixel": 338,
+      "yPixel": 360,
+      "offsetSeconds": 3379,
+      "price": "498.2961"
+    },
+    {
+      "xPixel": 339,
+      "yPixel": 365,
+      "offsetSeconds": 3389,
+      "price": "498.1387"
+    },
+    {
+      "xPixel": 340,
+      "yPixel": 370,
+      "offsetSeconds": 3399,
+      "price": "497.9813"
+    },
+    {
+      "xPixel": 341,
+      "yPixel": 375.5,
+      "offsetSeconds": 3409,
+      "price": "497.8082"
+    },
+    {
+      "xPixel": 342,
+      "yPixel": 380,
+      "offsetSeconds": 3420,
+      "price": "497.6665"
+    },
+    {
+      "xPixel": 343,
+      "yPixel": 384.5,
+      "offsetSeconds": 3430,
+      "price": "497.5249"
+    },
+    {
+      "xPixel": 344,
+      "yPixel": 388,
+      "offsetSeconds": 3440,
+      "price": "497.4147"
+    },
+    {
+      "xPixel": 345,
+      "yPixel": 391.5,
+      "offsetSeconds": 3450,
+      "price": "497.3045"
+    },
+    {
+      "xPixel": 346,
+      "yPixel": 395.5,
+      "offsetSeconds": 3460,
+      "price": "497.1786"
+    },
+    {
+      "xPixel": 347,
+      "yPixel": 398.5,
+      "offsetSeconds": 3471,
+      "price": "497.0842"
+    },
+    {
+      "xPixel": 348,
+      "yPixel": 401,
+      "offsetSeconds": 3481,
+      "price": "497.0055"
+    },
+    {
+      "xPixel": 349,
+      "yPixel": 397.5,
+      "offsetSeconds": 3491,
+      "price": "497.1157"
+    },
+    {
+      "xPixel": 350,
+      "yPixel": 394,
+      "offsetSeconds": 3501,
+      "price": "497.2258"
+    },
+    {
+      "xPixel": 351,
+      "yPixel": 392,
+      "offsetSeconds": 3512,
+      "price": "497.2888"
+    },
+    {
+      "xPixel": 352,
+      "yPixel": 387,
+      "offsetSeconds": 3522,
+      "price": "497.4462"
+    },
+    {
+      "xPixel": 353,
+      "yPixel": 384.5,
+      "offsetSeconds": 3532,
+      "price": "497.5249"
+    },
+    {
+      "xPixel": 354,
+      "yPixel": 386.5,
+      "offsetSeconds": 3542,
+      "price": "497.4619"
+    },
+    {
+      "xPixel": 355,
+      "yPixel": 390.5,
+      "offsetSeconds": 3553,
+      "price": "497.3360"
+    },
+    {
+      "xPixel": 356,
+      "yPixel": 399,
+      "offsetSeconds": 3563,
+      "price": "497.0684"
+    },
+    {
+      "xPixel": 357,
+      "yPixel": 406,
+      "offsetSeconds": 3573,
+      "price": "496.8481"
+    },
+    {
+      "xPixel": 358,
+      "yPixel": 414,
+      "offsetSeconds": 3583,
+      "price": "496.5963"
+    },
+    {
+      "xPixel": 359,
+      "yPixel": 419.5,
+      "offsetSeconds": 3594,
+      "price": "496.4231"
+    },
+    {
+      "xPixel": 360,
+      "yPixel": 415.5,
+      "offsetSeconds": 3604,
+      "price": "496.5490"
+    },
+    {
+      "xPixel": 361,
+      "yPixel": 411.5,
+      "offsetSeconds": 3614,
+      "price": "496.6750"
+    },
+    {
+      "xPixel": 362,
+      "yPixel": 392.5,
+      "offsetSeconds": 3624,
+      "price": "497.2730"
+    },
+    {
+      "xPixel": 363,
+      "yPixel": 384,
+      "offsetSeconds": 3635,
+      "price": "497.5406"
+    },
+    {
+      "xPixel": 364,
+      "yPixel": 367,
+      "offsetSeconds": 3645,
+      "price": "498.0757"
+    },
+    {
+      "xPixel": 365,
+      "yPixel": 358.5,
+      "offsetSeconds": 3655,
+      "price": "498.3433"
+    },
+    {
+      "xPixel": 366,
+      "yPixel": 354,
+      "offsetSeconds": 3665,
+      "price": "498.4850"
+    },
+    {
+      "xPixel": 367,
+      "yPixel": 357.5,
+      "offsetSeconds": 3675,
+      "price": "498.3748"
+    },
+    {
+      "xPixel": 368,
+      "yPixel": 363,
+      "offsetSeconds": 3686,
+      "price": "498.2017"
+    },
+    {
+      "xPixel": 369,
+      "yPixel": 368,
+      "offsetSeconds": 3696,
+      "price": "498.0443"
+    },
+    {
+      "xPixel": 370,
+      "yPixel": 374,
+      "offsetSeconds": 3706,
+      "price": "497.8554"
+    },
+    {
+      "xPixel": 371,
+      "yPixel": 377.5,
+      "offsetSeconds": 3716,
+      "price": "497.7452"
+    },
+    {
+      "xPixel": 372,
+      "yPixel": 380,
+      "offsetSeconds": 3727,
+      "price": "497.6665"
+    },
+    {
+      "xPixel": 373,
+      "yPixel": 379.5,
+      "offsetSeconds": 3737,
+      "price": "497.6823"
+    },
+    {
+      "xPixel": 374,
+      "yPixel": 378.5,
+      "offsetSeconds": 3747,
+      "price": "497.7137"
+    },
+    {
+      "xPixel": 375,
+      "yPixel": 378,
+      "offsetSeconds": 3757,
+      "price": "497.7295"
+    },
+    {
+      "xPixel": 376,
+      "yPixel": 377,
+      "offsetSeconds": 3768,
+      "price": "497.7610"
+    },
+    {
+      "xPixel": 377,
+      "yPixel": 377,
+      "offsetSeconds": 3778,
+      "price": "497.7610"
+    },
+    {
+      "xPixel": 378,
+      "yPixel": 376.5,
+      "offsetSeconds": 3788,
+      "price": "497.7767"
+    },
+    {
+      "xPixel": 379,
+      "yPixel": 377,
+      "offsetSeconds": 3798,
+      "price": "497.7610"
+    },
+    {
+      "xPixel": 383.0682,
+      "yPixel": 376.1136,
+      "offsetSeconds": 3840,
+      "price": "497.7889"
+    }
+  ]
+}
