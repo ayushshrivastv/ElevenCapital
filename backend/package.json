@@ -1,0 +1,38 @@
+{
+  "name": "eleven-capital-market-data",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.14.0 <23"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.json && npm run build:runtime",
+    "build:runtime": "esbuild src/bundle-entry.ts --bundle --platform=node --format=cjs --target=node22 --outfile=runtime/eleven-capital-backend.cjs --loader:.json=json --log-level=warning",
+    "test": "node --import tsx --test test/*.test.ts",
+    "benchmark:market-patch": "npm run build --silent && node scripts/market-patch-benchmark.mjs",
+    "probe:wallet": "node dist/portfolio-probe.js",
+    "check": "npm run build && npm test",
+    "reconcile:market": "node dist/reconcile.js",
+    "report:featured-coverage": "node scripts/provider-featured-coverage.mjs --interest",
+    "report:jupiter-featured": "node --import tsx scripts/jupiter-featured-coverage.mjs"
+  },
+  "dependencies": {
+    "@relay-protocol/settlement-sdk": "0.0.143",
+    "bs58": "6.0.0",
+    "decimal.js": "10.6.0",
+    "fastify": "5.12.5",
+    "lossless-json": "4.3.1",
+    "viem": "2.47.6",
+    "ws": "8.21.3",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.3",
+    "@types/ws": "8.18.1",
+    "tsx": "4.23.13",
+    "typescript": "5.8.3"
+  }
+}
