@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.ElevenCapital" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">@color/eleven_launcher_background</item>
+        <item name="android:colorAccent">#ADF47E</item>
+        <item name="android:windowSplashScreenBackground">@color/eleven_launcher_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/eleven_empty_splash</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/eleven_launcher_background</item>
+    </style>
+</resources>
