@@ -1,0 +1,121 @@
+[
+  {
+    "symbol": "MSFT",
+    "classification": "common_equity",
+    "isin": "US5949181045",
+    "cusip": "594918104",
+    "backed": {
+      "assetId": "df6da0d5-c7cb-4fbe-b45c-8ea53a75f566",
+      "symbol": "MSFTx",
+      "productIsin": "CH1436219203",
+      "classificationSource": "https://assets.backed.fi/products/microsoft-xstock"
+    },
+    "backpack": {
+      "assetId": "MSFT.US",
+      "cusip": "594918104"
+    },
+    "reviewedAt": "2026-09-18"
+  },
+  {
+    "symbol": "AAPL",
+    "classification": "common_equity",
+    "isin": "US0378331005",
+    "cusip": "037833100",
+    "backed": {
+      "assetId": "9e43a778-fdc8-44f1-87de-f2e7420bb7f7",
+      "symbol": "AAPLx",
+      "productIsin": "CH1436219187",
+      "classificationSource": "https://assets.backed.fi/products/apple-xstock"
+    },
+    "backpack": {
+      "assetId": "AAPL.US",
+      "cusip": "037833100"
+    },
+    "reviewedAt": "2026-09-18"
+  },
+  {
+    "symbol": "NVDA",
+    "classification": "common_equity",
+    "isin": "US67066G1040",
+    "cusip": "67066G104",
+    "backed": {
+      "assetId": "0997ed45-6a34-4f26-be92-28d8e0f9f28a",
+      "symbol": "NVDAx",
+      "productIsin": "CH1436219195",
+      "classificationSource": "https://assets.backed.fi/products/nvidia-xstock"
+    },
+    "backpack": {
+      "assetId": "NVDA.US",
+      "cusip": "67066G104"
+    },
+    "reviewedAt": "2026-09-18"
+  },
+  {
+    "symbol": "AMZN",
+    "classification": "common_equity",
+    "isin": "US0231351067",
+    "cusip": "023135106",
+    "backed": {
+      "assetId": "edfa8a48-6e91-41fd-acd9-fcf093e7e7ab",
+      "symbol": "AMZNx",
+      "productIsin": "CH1436219211",
+      "classificationSource": "https://assets.backed.fi/products/amazon-xstock"
+    },
+    "backpack": {
+      "assetId": "AMZN.US",
+      "cusip": "023135106"
+    },
+    "reviewedAt": "2026-09-18"
+  },
+  {
+    "symbol": "GOOGL",
+    "classification": "common_equity",
+    "isin": "US02079K3059",
+    "cusip": "02079K305",
+    "backed": {
+      "assetId": "e9913864-1a1b-45eb-bf6f-1eaef5433f94",
+      "symbol": "GOOGLx",
+      "productIsin": "CH1436219237",
+      "classificationSource": "https://assets.backed.fi/products/alphabet-xstock"
+    },
+    "backpack": {
+      "assetId": "GOOGL.US",
+      "cusip": "02079K305"
+    },
+    "reviewedAt": "2026-09-18"
+  },
+  {
+    "symbol": "META",
+    "classification": "common_equity",
+    "isin": "US30303M1027",
+    "cusip": "30303M102",
+    "backed": {
+      "assetId": "097f11dd-05e7-42ee-8b38-4548498f8a9b",
+      "symbol": "METAx",
+      "productIsin": "CH1436219229",
+      "classificationSource": "https://assets.backed.fi/products/meta-xstock"
+    },
+    "backpack": {
+      "assetId": "META.US",
+      "cusip": "30303M102"
+    },
+    "reviewedAt": "2026-09-18"
+  },
+  {
+    "symbol": "TSLA",
+    "classification": "common_equity",
+    "isin": "US88160R1014",
+    "cusip": "88160R101",
+    "backed": {
+      "assetId": "96f43a87-976b-4076-ac84-394966c32a90",
+      "symbol": "TSLAx",
+      "productIsin": "CH1436219252",
+      "classificationSource": "https://assets.backed.fi/products/tesla-xstock"
+    },
+    "backpack": {
+      "assetId": "TSLA.US",
+      "cusip": "88160R101"
+    },
+    "reviewedAt": "2026-09-18"
+  }
+]
