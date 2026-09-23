@@ -65,6 +65,13 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 
+kotlin {
+    sourceSets.getByName("main").kotlin.apply {
+        setSrcDirs(listOf(rootProject.projectDir))
+        include("*.kt", "auth/*.kt", "data/*.kt", "purchase/*.kt", "screens/*.kt", "ui/*.kt", "wallet/*.kt")
+    }
+}
+
 dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
