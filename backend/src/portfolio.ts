@@ -1,17 +1,23 @@
 import { createHash } from 'node:crypto';
 import type { Catalog } from './schema.js';
 import { Registry } from './registry.js';
-import { EthereumAddress, isSolanaAddress, PortfolioRequestSchema, PortfolioSchema, type Portfolio, type PortfolioRequest, type WalletChain } from './portfolio-schema.js';
-import { ETH_USDC, SOL_MINT, SOL_USDC, Money, PublicPortfolioUpstream, type AssetBalance, type BalanceRead, type PortfolioAsset, type PortfolioUpstream } from './portfolio-upstream.js';
+import { EthereumAddress, isSolanaAddress, PortfolioRequestSchema, PortfolioSchema, type Portfolio, type PortfolioRequest, type PortfolioNetwork, type PortfolioReadWallet } from './portfolio-schema.js';
+import { ARB_USDC, ETH_USDC, SOL_MINT, SOL_USDC, Money, PublicPortfolioUpstream, type AssetBalance, type BalanceRead, type PortfolioAsset, type PortfolioUpstream } from './portfolio-upstream.js';
 
-const CHAINS: WalletChain[] = ['SOLANA', 'ETHEREUM'];
+const CHAINS: PortfolioNetwork[] = ['SOLANA', 'ETHEREUM', 'ARBITRUM'];
 const ExpectedStockIds = Registry.flatMap(entry => [`backed:${entry.backed.assetId}`, `backpack:${entry.backpack.assetId}`]);
 function tokenSymbol(asset: PortfolioAsset): string {
   if (asset.key === 'SOLANA:native') return 'SOL';
   if (asset.key === `SOLANA:${SOL_MINT}`) return 'WSOL';
-  if (asset.key === `SOLANA:${SOL_USDC}` || asset.key === `ETHEREUM:${ETH_USDC}`) return 'USDC';
-  if (asset.key === 'ETHEREUM:native') return 'ETH';
+  if (asset.key === `SOLANA:${SOL_USDC}` || asset.key === `ETHEREUM:${ETH_USDC}` || asset.key === `ARBITRUM:${ARB_USDC}`) return 'USDC';
+  if (asset.key === 'ETHEREUM:native' || asset.key === 'ARBITRUM:native') return 'ETH';
+  if (asset.symbol && asset.chain === 'SOLANA' && asset.address && asset.symbol === `${asset.address.slice(0, 4)}…${asset.address.slice(-4)}`) return asset.symbol;
   throw new Error('Unsupported token identity');
+}
+function discoveredSolanaToken(asset: PortfolioAsset): boolean {
+  return asset.chain === 'SOLANA' && asset.stockId === null && asset.address !== null && isSolanaAddress(asset.address) &&
+    asset.key === `SOLANA:${asset.address}` && Number.isInteger(asset.decimals) && asset.decimals! >= 0 && asset.decimals! <= 36 &&
+    asset.pricing === 'solana' && asset.symbol === `${asset.address.slice(0, 4)}…${asset.address.slice(-4)}`;
 }
 export function portfolioAssets(catalog: Catalog, expectedIds = ExpectedStockIds): { assets: PortfolioAsset[]; complete: boolean } {
   const assets: PortfolioAsset[] = [
@@ -20,6 +26,8 @@ export function portfolioAssets(catalog: Catalog, expectedIds = ExpectedStockIds
     { key: `SOLANA:${SOL_USDC}`, chain: 'SOLANA', address: SOL_USDC, stockId: null, decimals: 6, pricing: 'solana' },
     { key: 'ETHEREUM:native', chain: 'ETHEREUM', address: null, stockId: null, decimals: 18, pricing: 'ETH' },
     { key: `ETHEREUM:${ETH_USDC}`, chain: 'ETHEREUM', address: ETH_USDC, stockId: null, decimals: 6, pricing: 'USDC' },
+    { key: 'ARBITRUM:native', chain: 'ARBITRUM', address: null, stockId: null, decimals: 18, pricing: 'ETH' },
+    { key: `ARBITRUM:${ARB_USDC}`, chain: 'ARBITRUM', address: ARB_USDC, stockId: null, decimals: 6, pricing: 'USDC' },
   ];
   let complete = expectedIds.length > 0;
   const byKey = new Map<string, PortfolioAsset>(assets.map(asset => [asset.key, asset]));
@@ -101,7 +109,11 @@ export class WalletPortfolioService {
         stock.provider === 'prestocks' && stock.deployments.some(deployment => deployment.network.trim().toLowerCase() === 'solana'));
       const catalogComplete = assetsComplete && preStocksComplete;
       if (assets.length > 3_000) return this.unavailable();
-      const responses = await Promise.all(request.wallets.map(async wallet => {
+      const readWallets: PortfolioReadWallet[] = [
+        ...request.wallets,
+        ...request.wallets.filter(wallet => wallet.chain === 'ETHEREUM').map(wallet => ({ chain: 'ARBITRUM' as const, address: wallet.address })),
+      ];
+      const responses = await Promise.all(readWallets.map(async wallet => {
         let result: BalanceRead;
         try { result = await this.upstream.balances(wallet, assets.filter(asset => asset.chain === wallet.chain), signal); }
         catch { result = { complete: false, observedAt: null, balances: [] }; }
@@ -116,7 +128,10 @@ export class WalletPortfolioService {
       const positions = new Map<string, AssetBalance>();
       for (const { result } of responses) for (const balance of result.balances) {
         // Injected/read adapters must still return one of this catalog's exact identities.
-        const asset = assets.find(asset => asset.key === balance.asset.key);
+        let asset = assets.find(asset => asset.key === balance.asset.key);
+        if (asset && (asset.chain !== balance.asset.chain || asset.address !== balance.asset.address ||
+          asset.stockId !== balance.asset.stockId || asset.decimals !== balance.asset.decimals)) throw new Error('Catalog balance identity mismatch');
+        if (!asset && discoveredSolanaToken(balance.asset)) asset = balance.asset;
         if (!asset || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(balance.quantity) || balance.quantity.length > 100) throw new Error('Invalid balance result');
         const amount = new Money(balance.quantity);
         if (!amount.isFinite() || amount.lt(0) || amount.gt('1e40')) throw new Error('Invalid balance');

@@ -22,7 +22,7 @@ class WalletPortfolioTrackerTest {
         at: Instant = time, tokenHoldings: List<LiveWalletTokenHolding> = emptyList()) = LiveWalletPortfolio(
         status = status, balanceUsd = balance, holdings = holdings, holdingsComplete = complete,
         unpricedAssets = if (status == WalletPortfolioStatus.PARTIAL) 1 else 0,
-        networks = WalletChain.entries.map { LiveWalletNetwork(it, WalletNetworkStatus.OK, at) },
+        networks = PortfolioNetwork.entries.map { LiveWalletNetwork(it, WalletNetworkStatus.OK, at) },
         receivedAt = at, message = null, tokenHoldings = tokenHoldings,
     )
 
@@ -193,7 +193,7 @@ class WalletPortfolioTrackerTest {
     }
 
     @Test fun `incomplete token scan preserves known quantity but clears price and stale value`() = runBlocking {
-        val token = LiveWalletTokenHolding(WalletChain.SOLANA, "SOLANA:native", "SOL", BigDecimal("0.25"),
+        val token = LiveWalletTokenHolding(PortfolioNetwork.SOLANA, "SOLANA:native", "SOL", BigDecimal("0.25"),
             BigDecimal("25"), BigDecimal("100"))
         var next = snapshot(balance = BigDecimal("25"), tokenHoldings = listOf(token))
         var elapsed = 0L

@@ -5,6 +5,9 @@ const ExactDecimal = Decimal.clone({ precision: 160 });
 
 export const WalletChain = z.enum(['SOLANA', 'ETHEREUM']);
 export type WalletChain = z.infer<typeof WalletChain>;
+/** A Privy EVM wallet has one address that can own assets on both EVM networks. */
+export const PortfolioNetwork = z.enum(['SOLANA', 'ETHEREUM', 'ARBITRUM']);
+export type PortfolioNetwork = z.infer<typeof PortfolioNetwork>;
 export const SolanaAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 export const EthereumAddress = /^0x[0-9a-fA-F]{40}$/;
 /** Reject syntactically base58 strings that are not exactly 32 decoded bytes. */
@@ -26,6 +29,7 @@ export const PortfolioRequestSchema = z.object({ wallets: z.array(Wallet).min(1)
   'Too many wallets on one network');
 export type PortfolioRequest = z.infer<typeof PortfolioRequestSchema>;
 export type WalletAddress = PortfolioRequest['wallets'][number];
+export type PortfolioReadWallet = { chain: PortfolioNetwork; address: string };
 export const PortfolioDecimal = z.string().max(100).regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/).refine(
   value => new Decimal(value).isFinite() && new Decimal(value).lte('1e60'));
 export const PortfolioSchema = z.object({
@@ -38,18 +42,20 @@ export const PortfolioSchema = z.object({
     valueUsd: PortfolioDecimal.nullable(),
   }).strict()).max(200),
   tokenHoldings: z.array(z.object({
-    chain: WalletChain,
-    assetId: z.string().min(1).max(60).regex(/^(?:SOLANA:(?:native|[1-9A-HJ-NP-Za-km-z]{32,44})|ETHEREUM:(?:native|0x[0-9a-f]{40}))$/),
-    symbol: z.string().min(1).max(12).regex(/^[A-Z0-9]+$/),
+    chain: PortfolioNetwork,
+    assetId: z.string().min(1).max(60).regex(/^(?:SOLANA:(?:native|[1-9A-HJ-NP-Za-km-z]{32,44})|(?:ETHEREUM|ARBITRUM):(?:native|0x[0-9a-f]{40}))$/),
+    symbol: z.string().min(1).max(12).regex(/^(?:[A-Z0-9]+|[1-9A-HJ-NP-Za-km-z]{4}…[1-9A-HJ-NP-Za-km-z]{4})$/),
     quantity: PortfolioDecimal.refine(value => new Decimal(value).gt(0)),
     valueUsd: PortfolioDecimal.nullable(),
     unitPriceUsd: PortfolioDecimal.refine(value => new ExactDecimal(value).gt(0)).nullable(),
   }).strict()).max(200),
   unpricedAssets: z.number().int().min(0).max(2_000),
-  networks: z.array(z.object({ chain: WalletChain, status: z.enum(['ok', 'unavailable']), observedAt: z.iso.datetime().nullable() }).strict()).length(2),
+  networks: z.array(z.object({ chain: PortfolioNetwork, status: z.enum(['ok', 'unavailable']), observedAt: z.iso.datetime().nullable() }).strict()).length(3),
   message: z.string().max(300).nullable(),
 }).strict().superRefine((value, context) => {
-  if (new Set(value.networks.map(network => network.chain)).size !== 2 || new Set(value.holdings.map(holding => holding.stockId)).size !== value.holdings.length ||
+  if (new Set(value.networks.map(network => network.chain)).size !== PortfolioNetwork.options.length ||
+    PortfolioNetwork.options.some(chain => !value.networks.some(network => network.chain === chain)) ||
+    new Set(value.holdings.map(holding => holding.stockId)).size !== value.holdings.length ||
     new Set(value.tokenHoldings.map(holding => holding.assetId)).size !== value.tokenHoldings.length) {
     context.addIssue({ code: 'custom', message: 'Duplicate portfolio identity' });
   }

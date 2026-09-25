@@ -8,6 +8,8 @@ import { PortfolioRequestSchema, PortfolioSchema, type PortfolioRequest } from '
 import { PublicPortfolioUpstream } from './portfolio-upstream.js';
 import { WalletActivityRequestSchema, WalletActivityResponseSchema, WalletActivityService,
   type WalletActivityRequest } from './wallet-activity.js';
+import { SolanaDevnetRequestSchema, SolanaDevnetResponseSchema, SolanaDevnetWalletService,
+  type SolanaDevnetRequest } from './solana-devnet-wallet.js';
 import { WalletTransactionsRequestSchema, WalletTransactionsResponseSchema, WalletTransactionsService,
   type WalletTransactionsRequest } from './wallet-transactions.js';
 import { PurchaseActivityResponseSchema } from './purchase-activity.js';
@@ -46,6 +48,7 @@ export async function buildApp(service: MarketService = new LiveMarketService(),
   options: { autoRefresh?: boolean; now?: () => number; refreshMs?: number; retryMs?: number; heartbeatMs?: number;
     portfolio?: Pick<WalletPortfolioService, 'portfolio'>;
     activity?: Pick<WalletActivityService, 'activity'>;
+    devnet?: Pick<SolanaDevnetWalletService, 'wallet'>;
     transactions?: Pick<WalletTransactionsService, 'activity'>;
     transfer?: Pick<TransferPreparationService, 'prepare'>; transferRateLimiter?: Pick<TransferRateLimiter, 'take'>;
     transferStatus?: Pick<TransferStatusService, 'status'>; transferStatusRateLimiter?: Pick<TransferRateLimiter, 'take'>;
@@ -62,6 +65,7 @@ export async function buildApp(service: MarketService = new LiveMarketService(),
   const portfolio = options.portfolio ?? new WalletPortfolioService(() => service.catalog(),
     new PublicPortfolioUpstream(undefined, options.now, event => app.log.warn(event, 'Wallet balance read unavailable')), options.now);
   const activity = options.activity ?? new WalletActivityService(undefined, options.now);
+  const devnet = options.devnet ?? new SolanaDevnetWalletService(undefined, options.now);
   const transactions = options.transactions ?? new WalletTransactionsService(activity, undefined, undefined, options.now);
   const transfer = options.transfer ?? new TransferPreparationService(undefined, options.now);
   const transferRateLimiter = options.transferRateLimiter ?? new TransferRateLimiter(options.now, 6_000);
@@ -70,8 +74,8 @@ export async function buildApp(service: MarketService = new LiveMarketService(),
   const accessTokenVerifier = options.accessTokenVerifier ?? configuredPrivyVerifier();
   const transferIntentLedger = options.transferIntentLedger ?? new TransferIntentLedger(undefined, options.now);
   const transferSubjectRateLimiter = options.transferSubjectRateLimiter ?? new SubjectRateLimiter(options.now);
-  // Only the independently decoded and simulated same-Solana route can enable a
-  // Privy signature. LI.FI cross-chain/EVM routes remain quote/review-only.
+  // Only independently validated Solana swaps and the pinned Relay
+  // Arbitrum-to-Anthropic route can enable a wallet signature.
   const purchase = options.purchase ?? new PurchaseService(() => service.catalog(), new PublicPurchaseChainReader(),
     new JupiterPurchaseRouter(), undefined, options.now, true);
   const purchaseSubjectRateLimiter = options.purchaseSubjectRateLimiter ?? new SubjectRateLimiter(options.now, 120);
@@ -134,6 +138,15 @@ export async function buildApp(service: MarketService = new LiveMarketService(),
     const parsed = WalletActivityRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_request', message: 'Solana wallet address is invalid.' });
     return activity.activity(parsed.data.walletAddress);
+  });
+  app.post<{ Body: SolanaDevnetRequest }>('/v1/wallet/devnet', { schema: {
+    body: schema(SolanaDevnetRequestSchema),
+    querystring: { type: 'object', additionalProperties: false, properties: {} },
+    response: { 200: schema(SolanaDevnetResponseSchema), 400: schema(ErrorSchema), 500: schema(ErrorSchema) },
+  } }, (request, reply) => {
+    const parsed = SolanaDevnetRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_request', message: 'Solana wallet address is invalid.' });
+    return devnet.wallet(parsed.data.walletAddress);
   });
   app.post<{ Body: WalletTransactionsRequest }>('/v1/wallet/transactions', { schema: {
     body: schema(WalletTransactionsRequestSchema),

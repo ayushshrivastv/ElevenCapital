@@ -33,7 +33,7 @@ export type WalletActivityResponse = z.infer<typeof WalletActivityResponseSchema
 type ActivityRow = WalletActivityResponse['transactions'][number];
 
 export interface WalletActivityRpc {
-  call(method: 'getGenesisHash' | 'getTokenAccountsByOwner' | 'getSignaturesForAddress' | 'getTransaction',
+  call(method: 'getGenesisHash' | 'getBalance' | 'getTokenAccountsByOwner' | 'getSignaturesForAddress' | 'getTransaction',
     params: unknown[], signal: AbortSignal): Promise<unknown>;
 }
 

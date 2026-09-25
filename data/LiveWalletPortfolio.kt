@@ -25,17 +25,19 @@ import org.json.JSONObject
 
 enum class WalletPortfolioStatus { OK, PARTIAL, UNAVAILABLE }
 enum class WalletNetworkStatus { OK, UNAVAILABLE }
+/** Holdings distinguish Ethereum and Arbitrum even though Privy uses one EVM address. */
+enum class PortfolioNetwork { SOLANA, ETHEREUM, ARBITRUM }
 
 data class LiveWalletHolding(val stockId: StockId, val quantity: BigDecimal, val valueUsd: BigDecimal?)
 data class LiveWalletTokenHolding(
-    val chain: WalletChain,
+    val chain: PortfolioNetwork,
     val assetId: String,
     val symbol: String,
     val quantity: BigDecimal,
     val valueUsd: BigDecimal?,
     val unitPriceUsd: BigDecimal?,
 )
-data class LiveWalletNetwork(val chain: WalletChain, val status: WalletNetworkStatus, val observedAt: Instant?)
+data class LiveWalletNetwork(val chain: PortfolioNetwork, val status: WalletNetworkStatus, val observedAt: Instant?)
 
 /** A missing valuation is never an empty wallet. Only an OK observation exposes a total. */
 data class LiveWalletPortfolio(
@@ -145,8 +147,8 @@ object LiveWalletPortfolioParser {
     private val clockSkew = Duration.ofSeconds(30)
     private val decimalPattern = Regex("(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?")
     private val stockIdPattern = Regex("(?:backed|backpack|prestocks):[A-Za-z0-9._-]{1,160}")
-    private val assetIdPattern = Regex("(?:SOLANA:(?:native|[1-9A-HJ-NP-Za-km-z]{32,44})|ETHEREUM:(?:native|0x[0-9a-f]{40}))")
-    private val tokenSymbolPattern = Regex("[A-Z0-9]{1,12}")
+    private val assetIdPattern = Regex("(?:SOLANA:(?:native|[1-9A-HJ-NP-Za-km-z]{32,44})|(?:ETHEREUM|ARBITRUM):(?:native|0x[0-9a-f]{40}))")
+    private val tokenSymbolPattern = Regex("(?:[A-Z0-9]{1,12}|[1-9A-HJ-NP-Za-km-z]{4}…[1-9A-HJ-NP-Za-km-z]{4})")
 
     fun portfolio(source: JSONObject, now: Instant = Instant.now()): LiveWalletPortfolio {
         require(source.integer("schemaVersion", 1) == 1)
@@ -159,10 +161,10 @@ object LiveWalletPortfolioParser {
         }
         val receivedAt = timestamp(source.string("receivedAt"), now)
         val networkRows = source.getJSONArray("networks")
-        require(networkRows.length() == WalletChain.entries.size)
+        require(networkRows.length() == PortfolioNetwork.entries.size)
         val networks = (0 until networkRows.length()).map { index ->
             val network = networkRows.getJSONObject(index)
-            val chain = WalletChain.valueOf(network.string("chain"))
+            val chain = PortfolioNetwork.valueOf(network.string("chain"))
             val networkStatus = when (network.string("status")) {
                 "ok" -> WalletNetworkStatus.OK
                 "unavailable" -> WalletNetworkStatus.UNAVAILABLE
@@ -173,7 +175,7 @@ object LiveWalletPortfolioParser {
             require(observedAt == null || !observedAt.isAfter(receivedAt.plus(clockSkew)))
             LiveWalletNetwork(chain, networkStatus, observedAt)
         }
-        require(networks.map { it.chain }.toSet() == WalletChain.entries.toSet())
+        require(networks.map { it.chain }.toSet() == PortfolioNetwork.entries.toSet())
         val rows = source.getJSONArray("holdings")
         require(rows.length() <= 512)
         val holdings = (0 until rows.length()).map { index ->
@@ -189,7 +191,7 @@ object LiveWalletPortfolioParser {
         require(tokenRows.length() <= 200)
         val tokenHoldings = (0 until tokenRows.length()).map { index ->
             val row = tokenRows.getJSONObject(index)
-            val chain = WalletChain.valueOf(row.string("chain"))
+            val chain = PortfolioNetwork.valueOf(row.string("chain"))
             val assetId = row.string("assetId")
             val symbol = row.string("symbol")
             require(assetIdPattern.matches(assetId) && assetId.startsWith("${chain.name}:") && tokenSymbolPattern.matches(symbol))

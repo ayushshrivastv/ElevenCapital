@@ -28,7 +28,7 @@ import org.json.JSONObject
 
 enum class WalletActivityStatus { OK, PARTIAL, UNAVAILABLE }
 enum class WalletActivityChain(val displayName: String) {
-    SOLANA("Solana"), ARBITRUM("Arbitrum"), ETHEREUM("Ethereum"),
+    SOLANA("Solana"), SOLANA_DEVNET("Solana Devnet"), ARBITRUM("Arbitrum"), ETHEREUM("Ethereum"),
 }
 enum class WalletTransactionDirection { RECEIVE, SEND }
 enum class WalletUsdBasis { CURRENT_SPOT }
@@ -224,7 +224,7 @@ private fun safeId(value: String): String {
 }
 
 private fun validatedAddress(chain: WalletActivityChain, address: String): String = when (chain) {
-    WalletActivityChain.SOLANA -> address.also { require(isSolanaPublicKey(it)) }
+    WalletActivityChain.SOLANA, WalletActivityChain.SOLANA_DEVNET -> address.also { require(isSolanaPublicKey(it)) }
     WalletActivityChain.ARBITRUM, WalletActivityChain.ETHEREUM -> address.also {
         require(canonicalEthereumAddress(it)?.lowercase(Locale.ROOT) == it)
     }
@@ -232,7 +232,7 @@ private fun validatedAddress(chain: WalletActivityChain, address: String): Strin
 
 private fun transactionId(value: String, chain: WalletActivityChain): String = value.also {
     require(when (chain) {
-        WalletActivityChain.SOLANA -> isCanonicalSolanaSignature(it)
+        WalletActivityChain.SOLANA, WalletActivityChain.SOLANA_DEVNET -> isCanonicalSolanaSignature(it)
         WalletActivityChain.ARBITRUM, WalletActivityChain.ETHEREUM -> EVM_TRANSACTION.matches(it)
     })
 }
@@ -285,7 +285,7 @@ class CompletedPurchasesClient internal constructor(baseUrl: String,
 
 private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
-private class ActivityHttp(baseUrl: String, http: OkHttpClient) {
+internal class ActivityHttp(baseUrl: String, http: OkHttpClient) {
     private val base = baseUrl.trimEnd('/')
     private val client = http.newBuilder().connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(28, TimeUnit.SECONDS).writeTimeout(8, TimeUnit.SECONDS)

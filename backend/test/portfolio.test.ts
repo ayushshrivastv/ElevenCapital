@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { Catalog, Stock } from '../src/schema.js';
 import { WalletPortfolioService, portfolioAssets } from '../src/portfolio.js';
 import { PortfolioRequestSchema, PortfolioSchema, isSolanaAddress } from '../src/portfolio-schema.js';
-import { ETH_USDC, SOL_USDC, TOKEN_PROGRAMS, SOL_MINT, PublicPortfolioUpstream, ethereumPrices, jupiterPrices, rpcEndpoint,
+import { ARB_USDC, ETH_USDC, SOL_USDC, TOKEN_PROGRAMS, SOL_MINT, MAINNET_GENESIS, PublicPortfolioUpstream, ethereumPrices, jupiterPrices, rpcEndpoint,
   publicPortfolioTransport, rpcRequestGroups, type PortfolioTransport, type PortfolioUpstream, type RpcCall } from '../src/portfolio-upstream.js';
 import { buildApp } from '../src/app.js';
 
@@ -35,6 +35,8 @@ function catalog(stocks = [stock]): Catalog {
 const assets = portfolioAssets(catalog(), [stockId]).assets;
 const nativeSol = assets.find(asset => asset.key === 'SOLANA:native')!;
 const nativeEth = assets.find(asset => asset.key === 'ETHEREUM:native')!;
+const nativeArb = assets.find(asset => asset.key === 'ARBITRUM:native')!;
+const arbUsdc = assets.find(asset => asset.key === `ARBITRUM:${ARB_USDC}`)!;
 const solStock = assets.find(asset => asset.address === mint)!;
 const ethStock = assets.find(asset => asset.address === contract)!;
 const solUsdc = assets.find(asset => asset.address === SOL_USDC)!;
@@ -54,7 +56,7 @@ test('empty connected wallet returns an exact zero without prices, even when sto
   const result = await service(source).portfolio(request);
   assert.equal(result.status, 'ok'); assert.equal(result.balanceUsd, '0');
   assert.equal(result.holdingsComplete, true); assert.deepEqual(result.holdings, []); assert.equal(queried, false);
-  assert.deepEqual(result.networks.map(network => network.status), ['ok', 'ok']);
+  assert.deepEqual(result.networks.map(network => network.status), ['ok', 'ok', 'ok']);
 });
 test('loaded deployment metadata allows a verified zero even while every market quote provider is unavailable', async () => {
   const { Registry } = await import('../src/registry.js');
@@ -89,10 +91,58 @@ test('aggregates native, USDC and stock assets without rounding small fractions 
     { chain: 'SOLANA', assetId: nativeSol.key, symbol: 'SOL', quantity: '0.000000001', valueUsd: '0.0000001', unitPriceUsd: '100' },
   ]);
 });
+test('verified EVM address contributes Arbitrum ETH and canonical USDC to the wallet total', async () => {
+  const seen: { chain: string; address: string }[] = [];
+  const source = upstream({ [nativeArb.key]: '0.001', [arbUsdc.key]: '1.25' },
+    { [nativeArb.key]: '2100', [arbUsdc.key]: '0.99' });
+  const original = source.balances;
+  source.balances = async (wallet, definitions, signal) => {
+    seen.push({ chain: wallet.chain, address: wallet.address });
+    return original(wallet, definitions, signal);
+  };
+  const result = await service(source).portfolio(request);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.balanceUsd, '3.3375');
+  assert.deepEqual(result.tokenHoldings, [
+    { chain: 'ARBITRUM', assetId: arbUsdc.key, symbol: 'USDC', quantity: '1.25', valueUsd: '1.2375', unitPriceUsd: '0.99' },
+    { chain: 'ARBITRUM', assetId: nativeArb.key, symbol: 'ETH', quantity: '0.001', valueUsd: '2.1', unitPriceUsd: '2100' },
+  ]);
+  assert.deepEqual(seen.find(wallet => wallet.chain === 'ARBITRUM'), { chain: 'ARBITRUM', address: ethWallet });
+});
+test('an unavailable Arbitrum read cannot publish a complete wallet total', async () => {
+  const source = upstream({ [nativeEth.key]: '1' }, { [nativeEth.key]: '2000' });
+  const original = source.balances;
+  source.balances = (wallet, definitions, signal) => wallet.chain === 'ARBITRUM'
+    ? Promise.reject(new Error('RPC unavailable')) : original(wallet, definitions, signal);
+  const result = await service(source).portfolio(request);
+  assert.equal(result.status, 'partial');
+  assert.equal(result.balanceUsd, null);
+  assert.equal(result.networks.find(network => network.chain === 'ARBITRUM')?.status, 'unavailable');
+  assert.equal(result.tokenHoldings.find(token => token.assetId === nativeEth.key)?.quantity, '1');
+});
 test('positive stocks stay visible when price is missing; no fabricated zero or partial total', async () => {
   const result = await service(upstream({ [solStock.key]: '1.25', [nativeEth.key]: '1' }, { [nativeEth.key]: '2000' })).portfolio(request);
   assert.equal(result.status, 'partial'); assert.equal(result.balanceUsd, null); assert.equal(result.holdingsComplete, true);
   assert.equal(result.unpricedAssets, 1); assert.deepEqual(result.holdings, [{ stockId, quantity: '1.25', valueUsd: null }]);
+});
+test('an independently owned unlisted SPL token remains visible by mint when no USD price exists', async () => {
+  const unknownMint = 'Vote111111111111111111111111111111111111111';
+  assert.equal(isSolanaAddress(unknownMint), true);
+  const unknown = { key: `SOLANA:${unknownMint}`, chain: 'SOLANA' as const, address: unknownMint,
+    stockId: null, decimals: 6, pricing: 'solana' as const, symbol: `${unknownMint.slice(0, 4)}…${unknownMint.slice(-4)}` };
+  const source = upstream();
+  const original = source.balances;
+  source.balances = async (wallet, definitions, signal) => {
+    const read = await original(wallet, definitions, signal);
+    return wallet.chain === 'SOLANA' ? { ...read, balances: [...read.balances,
+      { asset: unknown, quantity: '1.234567' }] } : read;
+  };
+  const result = await service(source).portfolio(request);
+  assert.equal(result.status, 'partial');
+  assert.equal(result.balanceUsd, null);
+  assert.equal(result.holdingsComplete, true);
+  assert.deepEqual(result.tokenHoldings, [{ chain: 'SOLANA', assetId: unknown.key, symbol: unknown.symbol,
+    quantity: '1.234567', valueUsd: null, unitPriceUsd: null }]);
 });
 test('a read failure never means zero and successful chain stock quantities are preserved', async () => {
   const source = upstream({ [solStock.key]: '2' }, { [solStock.key]: '100' }); const original = source.balances;
@@ -141,10 +191,10 @@ test('15 second cache deduplicates, preserves observation time, and never return
   source.balances = async (...args) => { loads++; if (fail) throw new Error('offline'); return original(...args); };
   const reader = service(source, () => time);
   const [first, second] = await Promise.all([reader.portfolio(request), reader.portfolio(request)]);
-  assert.deepEqual(first, second); assert.equal(loads, 2);
-  time += 14_999; assert.equal((await reader.portfolio(request)).receivedAt, iso); assert.equal(loads, 2);
+  assert.deepEqual(first, second); assert.equal(loads, 3);
+  time += 14_999; assert.equal((await reader.portfolio(request)).receivedAt, iso); assert.equal(loads, 3);
   time++; fail = true; const failed = await reader.portfolio(request);
-  assert.equal(failed.status, 'unavailable'); assert.equal(failed.balanceUsd, null); assert.equal(failed.holdingsComplete, false); assert.equal(loads, 4);
+  assert.equal(failed.status, 'unavailable'); assert.equal(failed.balanceUsd, null); assert.equal(failed.holdingsComplete, false); assert.equal(loads, 6);
 });
 test('a stuck provider hits the total request deadline and returns a safe unavailable response', async () => {
   const source = upstream(); source.balances = () => new Promise(() => {});
@@ -154,7 +204,8 @@ test('a stuck provider hits the total request deadline and returns a safe unavai
 test('response contract rejects an ok total with missing network or holdings coverage', () => {
   const base = { schemaVersion: 1, scope: 'supported-wallet-assets', currency: 'USD', status: 'ok', receivedAt: iso,
     balanceUsd: '0', holdingsComplete: true, holdings: [], tokenHoldings: [], unpricedAssets: 0,
-    networks: [{ chain: 'SOLANA', status: 'ok', observedAt: iso }, { chain: 'ETHEREUM', status: 'ok', observedAt: iso }], message: null };
+    networks: [{ chain: 'SOLANA', status: 'ok', observedAt: iso }, { chain: 'ETHEREUM', status: 'ok', observedAt: iso },
+      { chain: 'ARBITRUM', status: 'ok', observedAt: iso }], message: null };
   assert.equal(PortfolioSchema.safeParse(base).success, true);
   assert.equal(PortfolioSchema.safeParse({ ...base, holdingsComplete: false }).success, false);
   assert.equal(PortfolioSchema.safeParse({ ...base, networks: [base.networks[0], base.networks[0]] }).success, false);
@@ -186,21 +237,63 @@ test('Solana reads both token programs, exact raw amounts and sums accounts inst
       const mintData = Buffer.alloc(82); mintData[44] = 6; mintData[45] = 1;
       return [{ value: { owner: TOKEN_PROGRAMS[1], executable: false, lamports: '1', data: [mintData.toString('base64'), 'base64'] } }];
     }
-    return ['5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d', { value: '1' },
-      { value: [tokenAccount(SOL_USDC, mint, '2000001', TOKEN_PROGRAMS[0])] },
-      { value: [tokenAccount(SOL_MINT, mint, '3000002', TOKEN_PROGRAMS[1])] }];
+    const call = calls[0]!;
+    if (call.method === 'getGenesisHash') return [MAINNET_GENESIS];
+    if (call.method === 'getBalance') return [{ value: '1' }];
+    return [{ value: [tokenAccount(call.params[1] && (call.params[1] as { programId: string }).programId === TOKEN_PROGRAMS[0]
+      ? SOL_USDC : SOL_MINT, mint, call.params[1] && (call.params[1] as { programId: string }).programId === TOKEN_PROGRAMS[0]
+        ? '2000001' : '3000002', (call.params[1] as { programId: string }).programId)] }];
   } };
   const adapter = new PublicPortfolioUpstream(transport, () => now);
   const result = await adapter.balances(request.wallets[0]!, assets.filter(asset => asset.chain === 'SOLANA'), new AbortController().signal);
   assert.equal(result.complete, true); assert.deepEqual(result.balances.map(balance => balance.quantity), ['0.000000001', '2.000001', '3.000002']);
   assert.deepEqual(methods, ['getGenesisHash', 'getBalance', 'getTokenAccountsByOwner', 'getTokenAccountsByOwner', 'getAccountInfo']);
 });
+test('Solana ownership scan discovers an arbitrary positive SPL token outside the stock catalog', async () => {
+  const unknownMint = 'Vote111111111111111111111111111111111111111';
+  const transport: PortfolioTransport = { ...noopTransport, rpc: async (_chain, calls) => {
+    const call = calls[0]!;
+    if (call.method === 'getGenesisHash') return [MAINNET_GENESIS];
+    if (call.method === 'getBalance') return [{ value: '0' }];
+    return [{ value: (call.params[1] as { programId: string }).programId === TOKEN_PROGRAMS[0]
+      ? [tokenAccount('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', unknownMint,
+        '1250000', TOKEN_PROGRAMS[0])] : [] }];
+  } };
+  const result = await new PublicPortfolioUpstream(transport, () => now).balances(request.wallets[0]!,
+    assets.filter(asset => asset.chain === 'SOLANA'), new AbortController().signal);
+  assert.equal(result.complete, true);
+  const unlisted = result.balances.find(balance => balance.asset.address === unknownMint);
+  assert.equal(unlisted?.quantity, '1.25');
+  assert.equal(unlisted?.asset.stockId, null);
+  assert.equal(unlisted?.asset.symbol, 'Vote…1111');
+});
+test('one failed Solana token-program read preserves verified native and other token balances as partial', async () => {
+  const unknownMint = 'Vote111111111111111111111111111111111111111';
+  const transport: PortfolioTransport = { ...noopTransport, rpc: async (_chain, calls) => {
+    const call = calls[0]!;
+    if (call.method === 'getGenesisHash') return [MAINNET_GENESIS];
+    if (call.method === 'getBalance') return [{ value: '2000000000' }];
+    if (call.method === 'getTokenAccountsByOwner' &&
+      (call.params[1] as { programId: string }).programId === TOKEN_PROGRAMS[0]) throw new Error('RPC rate limited');
+    return [{ value: [tokenAccount('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', unknownMint,
+      '500000', TOKEN_PROGRAMS[1])] }];
+  } };
+  const result = await new PublicPortfolioUpstream(transport, () => now).balances(request.wallets[0]!,
+    assets.filter(asset => asset.chain === 'SOLANA'), new AbortController().signal);
+  assert.equal(result.complete, false);
+  assert.deepEqual(result.balances.map(balance => balance.quantity), ['2', '0.5']);
+  assert.equal(result.balances[1]?.asset.address, unknownMint);
+});
 test('Solana wrong network, duplicate accounts or wrong account owner fail closed', async () => {
   const row = tokenAccount(SOL_USDC, mint, '1', TOKEN_PROGRAMS[0]);
   for (const response of [['testnet', { value: '0' }, { value: [] }, { value: [] }],
     ['5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d', { value: '0' }, { value: [row, row] }, { value: [] }],
     ['5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d', { value: '0' }, { value: [tokenAccount(SOL_USDC, mint, '1', TOKEN_PROGRAMS[1])] }, { value: [] }]]) {
-    const reader = new PublicPortfolioUpstream({ ...noopTransport, rpc: async () => response }, () => now);
+    const reader = new PublicPortfolioUpstream({ ...noopTransport, rpc: async (_chain, calls) => {
+      const method = calls[0]!.method;
+      return [method === 'getGenesisHash' ? response[0] : method === 'getBalance' ? response[1] :
+        (calls[0]!.params[1] as { programId: string }).programId === TOKEN_PROGRAMS[0] ? response[2] : response[3]];
+    } }, () => now);
     assert.equal((await reader.balances(request.wallets[0]!, assets.filter(asset => asset.chain === 'SOLANA'), new AbortController().signal)).complete, false);
   }
 });
@@ -210,7 +303,8 @@ test('Solana accepts full mainnet RPC genesis hash and rejects the truncated CAI
     ['5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', false],
   ] as const) {
     const reader = new PublicPortfolioUpstream({ ...noopTransport,
-      rpc: async () => [genesis, { value: '0' }, { value: [] }, { value: [] }],
+      rpc: async (_chain, calls) => [calls[0]!.method === 'getGenesisHash' ? genesis :
+        calls[0]!.method === 'getBalance' ? { value: '0' } : { value: [] }],
     }, () => now);
     const result = await reader.balances(request.wallets[0]!, assets.filter(asset => asset.chain === 'SOLANA'), new AbortController().signal);
     assert.equal(result.complete, expected);
@@ -220,7 +314,7 @@ test('failed network reads emit only bounded safe diagnostics and throttle ident
   let clock = now;
   const diagnostics: unknown[] = [];
   const reader = new PublicPortfolioUpstream({ ...noopTransport,
-    rpc: async () => ['5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', { value: '0' }, { value: [] }, { value: [] }],
+    rpc: async () => ['5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
   }, () => clock, diagnostic => diagnostics.push(diagnostic));
   const args = [request.wallets[0]!, assets.filter(asset => asset.chain === 'SOLANA'), new AbortController().signal] as const;
   await reader.balances(...args); await reader.balances(...args);
@@ -250,6 +344,36 @@ test('Ethereum malformed hex, wrong chain or incorrect canonical USDC decimals p
   for (const [head, values] of [[['0x89', '0x123'], []], [['0x1', '0x123'], ['0x', '0x0', '0x6', '0x0', '0x12']], [['0x1', '0x123'], ['0x0', '0x0', '0x12', '0x0', '0x12']]]) {
     const reader = new PublicPortfolioUpstream({ ...noopTransport, rpc: async (_chain, calls) => calls[0]!.method === 'eth_chainId' ? head! : values! }, () => now);
     assert.equal((await reader.balances(request.wallets[1]!, assets.filter(asset => asset.chain === 'ETHEREUM'), new AbortController().signal)).complete, false);
+  }
+});
+test('Arbitrum reads verified chain 42161 at one block with exact native ETH and canonical USDC', async () => {
+  const calls: { chain: string; batch: RpcCall[] }[] = [];
+  const transport: PortfolioTransport = { ...noopTransport, rpc: async (chain, batch) => {
+    calls.push({ chain, batch });
+    return batch[0]?.method === 'eth_chainId' ? ['0xa4b1', '0x123'] :
+      ['0xde0b6b3a7640000', '0x1312d00', '0x6'];
+  } };
+  const wallet = { chain: 'ARBITRUM' as const, address: ethWallet };
+  const result = await new PublicPortfolioUpstream(transport, () => now).balances(wallet,
+    assets.filter(asset => asset.chain === 'ARBITRUM'), new AbortController().signal);
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.balances.map(balance => balance.quantity), ['1', '20']);
+  assert.ok(calls.every(call => call.chain === 'ARBITRUM'));
+  assert.deepEqual(calls[1]!.batch.filter(call => call.method === 'eth_call').map(call => (call.params[0] as { to: string }).to),
+    [ARB_USDC, ARB_USDC]);
+  assert.ok(calls[1]!.batch.every(call => call.params[1] === '0x123'));
+});
+test('Arbitrum wrong chain and noncanonical USDC decimals fail closed', async () => {
+  for (const [header, values] of [
+    [['0x1', '0x123'], ['0x0', '0x0', '0x6']],
+    [['0xa4b1', '0x123'], ['0x0', '0x0', '0x12']],
+  ]) {
+    const reader = new PublicPortfolioUpstream({ ...noopTransport,
+      rpc: async (_chain, batch) => batch[0]?.method === 'eth_chainId' ? header! : values!,
+    }, () => now);
+    const result = await reader.balances({ chain: 'ARBITRUM', address: ethWallet },
+      assets.filter(asset => asset.chain === 'ARBITRUM'), new AbortController().signal);
+    assert.equal(result.complete, false);
   }
 });
 test('Jupiter prices require one exact mint, current metadata and positive USD price', () => {
@@ -371,7 +495,8 @@ test('new catalog Solana stocks use normalized network names without expanding E
   let observedSolana = 0; let observedEthereum = 0;
   const source: PortfolioUpstream = {
     balances: async (wallet, definitions) => {
-      if (wallet.chain === 'SOLANA') observedSolana = definitions.length; else observedEthereum = definitions.length;
+      if (wallet.chain === 'SOLANA') observedSolana = definitions.length;
+      if (wallet.chain === 'ETHEREUM') observedEthereum = definitions.length;
       return { complete: true, observedAt: iso, balances: definitions.map(asset => ({ asset,
         quantity: asset.stockId === target.id ? '0.75' : '0' })) };
     },

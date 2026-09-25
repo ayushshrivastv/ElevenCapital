@@ -4,6 +4,7 @@ import com.elevencapital.app.auth.UserWallet
 import com.elevencapital.app.auth.WalletChain
 import com.elevencapital.app.data.LiveWalletPortfolioClient
 import com.elevencapital.app.data.LiveWalletPortfolioParser
+import com.elevencapital.app.data.PortfolioNetwork
 import com.elevencapital.app.data.WalletPortfolioHttpException
 import com.elevencapital.app.data.WalletPortfolioStatus
 import java.math.BigDecimal
@@ -33,7 +34,7 @@ class LiveWalletPortfolioTest {
         assertEquals(BigDecimal.ZERO, result.balanceUsd)
         assertTrue(result.holdings.isEmpty())
         assertTrue(result.holdingsComplete)
-        assertEquals(2, result.networks.size)
+        assertEquals(3, result.networks.size)
     }
 
     @Test fun `network failure cannot masquerade as zero or an empty successful wallet`() {
@@ -52,6 +53,7 @@ class LiveWalletPortfolioTest {
             .put("holdingsComplete", false).put("unpricedAssets", 1).put("holdings", JSONArray().put(holding(value = JSONObject.NULL)))
         network(response, 0).put("status", "unavailable").put("observedAt", JSONObject.NULL)
         network(response, 1).put("status", "unavailable").put("observedAt", JSONObject.NULL)
+        network(response, 2).put("status", "unavailable").put("observedAt", JSONObject.NULL)
         val result = parse(response)
         assertEquals(WalletPortfolioStatus.UNAVAILABLE, result.status)
         assertNull(result.balanceUsd)
@@ -97,7 +99,7 @@ class LiveWalletPortfolioTest {
         network(duplicate, 1).put("chain", "SOLANA")
         assertThrows(IllegalArgumentException::class.java) { parse(duplicate) }
         val unknown = emptyWallet()
-        network(unknown, 1).put("chain", "ARBITRUM")
+        network(unknown, 1).put("chain", "BASE")
         assertThrows(IllegalArgumentException::class.java) { parse(unknown) }
     }
 
@@ -117,6 +119,7 @@ class LiveWalletPortfolioTest {
         val atBoundary = emptyWallet().put("receivedAt", "2026-09-18T11:55:00Z")
         network(atBoundary, 0).put("observedAt", "2026-09-18T11:55:00Z")
         network(atBoundary, 1).put("observedAt", "2026-09-18T11:55:00Z")
+        network(atBoundary, 2).put("observedAt", "2026-09-18T11:55:00Z")
         assertEquals(now.minusSeconds(300), parse(atBoundary).receivedAt)
     }
 
@@ -161,6 +164,17 @@ class LiveWalletPortfolioTest {
         assertThrows(IllegalArgumentException::class.java) { parse(response.put("tokenHoldings", JSONArray().put(token).put(token))) }
         response.put("tokenHoldings", JSONArray().put(token))
         token.put("unitPriceUsd", JSONObject.NULL)
+        assertThrows(IllegalArgumentException::class.java) { parse(response) }
+    }
+
+    @Test fun `Arbitrum holdings remain distinct from Ethereum for the same Privy EVM address`() {
+        val contract = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
+        val arbUsdc = JSONObject().put("chain", "ARBITRUM").put("assetId", "ARBITRUM:$contract")
+            .put("symbol", "USDC").put("quantity", "1.25").put("unitPriceUsd", "0.99")
+            .put("valueUsd", "1.2375")
+        val response = emptyWallet().put("balanceUsd", "1.2375").put("tokenHoldings", JSONArray().put(arbUsdc))
+        assertEquals(PortfolioNetwork.ARBITRUM, parse(response).tokenHoldings.single().chain)
+        arbUsdc.put("assetId", "ETHEREUM:$contract")
         assertThrows(IllegalArgumentException::class.java) { parse(response) }
     }
 
@@ -285,6 +299,7 @@ class LiveWalletPortfolioTest {
         "schemaVersion":1,"scope":"supported-wallet-assets","currency":"USD","status":"ok",
         "receivedAt":"2026-09-18T12:00:00Z","balanceUsd":"0","holdings":[],"tokenHoldings":[],"holdingsComplete":true,"unpricedAssets":0,
         "networks":[{"chain":"SOLANA","status":"ok","observedAt":"2026-09-18T12:00:00Z"},
-            {"chain":"ETHEREUM","status":"ok","observedAt":"2026-09-18T12:00:00Z"}],"message":null
+            {"chain":"ETHEREUM","status":"ok","observedAt":"2026-09-18T12:00:00Z"},
+            {"chain":"ARBITRUM","status":"ok","observedAt":"2026-09-18T12:00:00Z"}],"message":null
     }""")
 }
