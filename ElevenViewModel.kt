@@ -5,19 +5,22 @@ import android.os.SystemClock
 import android.util.Log
 import java.io.IOException
 import java.security.MessageDigest
-import java.util.concurrent.atomic.AtomicInteger
+import java.time.Instant
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.elevencapital.app.data.FixtureStockData
 import com.elevencapital.app.data.LiveCatalog
 import com.elevencapital.app.data.LiveMarketDataClient
 import com.elevencapital.app.data.LiveChart
+import com.elevencapital.app.data.StartupMarketCache
+import com.elevencapital.app.data.CachedStartupChart
 import com.elevencapital.app.data.LiveInstrument
 import com.elevencapital.app.data.OrderedMarketCatalog
 import com.elevencapital.app.data.MarketSubscription
 import com.elevencapital.app.data.MarketViewportSubscriptions
 import com.elevencapital.app.data.alignChartObservation
 import com.elevencapital.app.data.isChartBasisCompatible
+import com.elevencapital.app.data.isChartDisplayCompatible
 import com.elevencapital.app.data.MarketDataHttpException
 import com.elevencapital.app.data.MarketStreamEvent
 import com.elevencapital.app.data.LiveWalletPortfolioClient
@@ -31,6 +34,7 @@ import com.elevencapital.app.purchase.PurchasePhase
 import com.elevencapital.app.purchase.PurchaseUiState
 import com.elevencapital.core.market.recoveringMarketStream
 import com.elevencapital.app.screens.DetailPeriod
+import com.elevencapital.app.screens.DetailChartContext
 import com.elevencapital.app.screens.DetailPresentation
 import com.elevencapital.app.screens.PrimaryStockRow
 import com.elevencapital.app.screens.MarketQuery
@@ -53,6 +57,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -64,6 +69,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import coil3.imageLoader
 import coil3.request.ImageRequest
 
@@ -73,6 +79,7 @@ data class MarketConnectionState(
     val offline: Boolean = false,
     val refreshFailed: Boolean = false,
     val chartMessages: Map<Pair<StockId, ChartRange>, String> = emptyMap(),
+    val chartContexts: Map<Pair<StockId, ChartRange>, DetailChartContext> = emptyMap(),
 )
 
 private sealed interface OrderedMarketUpdate {
@@ -116,6 +123,12 @@ class ElevenViewModel @JvmOverloads constructor(
     private val stockIdentities = mutableMapOf<StockId, Stock>()
     private val prefetchedMarketLogos = mutableSetOf<String>()
     private var marketLogosPrepared = false
+    private val startupChartCache = if (isLive) StartupMarketCache(application.cacheDir, BuildConfig.MARKET_DATA_URL) else null
+    private var restoredStartupCharts: List<CachedStartupChart> = emptyList()
+    private var startupMarketRunning = false
+    private var startupMarketStarted = false
+    private var startupMarketJob: Job? = null
+    private var chartCacheWriteJob: Job? = null
     private val reconnectSignals = Channel<Unit>(Channel.CONFLATED)
     private var visibleScope: CoroutineScope? = null
     private var catalogReceivedElapsed = 0L
@@ -125,11 +138,14 @@ class ElevenViewModel @JvmOverloads constructor(
     private val chartPrewarmAttempts = mutableMapOf<Pair<StockId, ChartRange>, Long>()
     private val chartPrewarmWakeups = Channel<Unit>(Channel.CONFLATED)
     private var chartPrewarmJob: Job? = null
+    private var chartPrewarmSelectionJob: Job? = null
+    private var chartPrewarmCatalog: List<LiveInstrument> = emptyList()
     private var chartPrewarmTargets: List<Pair<StockId, ChartRange>> = emptyList()
     private var activeChart: Pair<StockId, ChartRange>? = null
     private var visibleStockIds: Set<StockId> = emptySet()
     private val viewportSubscriptions = MarketViewportSubscriptions()
     private val orderedCatalog = OrderedMarketCatalog()
+    private val catalogExpiryCache = MarketCatalogExpiryCache()
     private var instrumentIndex: Map<StockId, LiveInstrument> = emptyMap()
     private val chartGeneration = mutableMapOf<Pair<StockId, ChartRange>, Long>()
     private val chartMetadata = mutableMapOf<Pair<StockId, ChartRange>, LiveChart>()
@@ -143,12 +159,69 @@ class ElevenViewModel @JvmOverloads constructor(
     val stockFlow = StockFlowController(repository)
     private val mutableTab = MutableStateFlow(RootTab.Home)
     val tab = mutableTab.asStateFlow()
-    init { if (isLive) refreshSignalDirectory() }
     private val mutableWatched = MutableStateFlow(
         if (isLive) preferences?.getStringSet("stockIds", emptySet()).orEmpty().map(::StockId).toSet()
         else fixtures.initialWatchedIds,
     )
     val watched = mutableWatched.asStateFlow()
+    init {
+        if (isLive) {
+            ensureMarketWarmup()
+            refreshSignalDirectory()
+        }
+    }
+
+    /** Public data starts with the launch animation and survives Android's full-screen PIN prompt.
+     * The one startup pass is bounded; ongoing streams remain owned by the visible Activity. */
+    private fun ensureMarketWarmup() {
+        val dataClient = client ?: return
+        if (startupMarketStarted) return
+        startupMarketStarted = true
+        startupMarketRunning = true
+        startupMarketJob = viewModelScope.launch {
+            try {
+                withTimeoutOrNull(180_000L) {
+                    restoredStartupCharts = startupChartCache?.read().orEmpty()
+                    if (mutableConnection.value.catalog == null) {
+                        val initial = dataClient.catalog()
+                        if (mutableConnection.value.catalog == null) acceptCatalog(initial)
+                    }
+                    restoreStartupCharts()
+                    val instruments = mutableConnection.value.catalog?.instruments.orEmpty()
+                    val targets = withContext(Dispatchers.Default) { marketPrewarmTargets(instruments) }
+                    chartPrewarmCatalog = instruments
+                    chartPrewarmTargets = targets
+                    updateSubscription()
+                    prefetchMarketLogos(this)
+                    if (BuildConfig.DEBUG) {
+                        val restored = targets.count(::hasFreshPrewarmedChart)
+                        Log.i("ElevenMarketData", "Startup preload: $restored/${targets.size} charts restored; " +
+                            targets.groupingBy { it.first.value.substringBefore(':') }.eachCount())
+                    }
+                    do {
+                        prewarmChartBatch(targets)
+                        val missing = targets.any { !hasFreshPrewarmedChart(it) }
+                        if (missing) delay(15_000)
+                    } while (missing)
+                    if (BuildConfig.DEBUG) {
+                        Log.i("ElevenMarketData", "Startup preload finished: ${targets.size}/${targets.size} default charts ready")
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // The foreground stream and normal prefetch retry remain independent.
+            } finally {
+                startupMarketRunning = false
+                if (BuildConfig.DEBUG) {
+                    Log.i("ElevenMarketData", "Startup preload retained: " +
+                        "${chartPrewarmTargets.count(::hasFreshPrewarmedChart)}/${chartPrewarmTargets.size} charts")
+                }
+                scheduleChartPrewarm()
+            }
+        }
+    }
+
     /** repeatOnLifecycle owns this scope: streams, callbacks, retries and charts stop in background. */
     suspend fun refreshWhileVisible() {
         val dataClient = client ?: return
@@ -157,7 +230,7 @@ class ElevenViewModel @JvmOverloads constructor(
             expireOldData()
             scheduleChartPrewarm()
             // REST gives first paint while the socket establishes its authoritative snapshot.
-            if (mutableConnection.value.catalog == null) launch {
+            if (mutableConnection.value.catalog == null && !startupMarketRunning) launch {
                 try {
                     val initial = dataClient.catalog()
                     if (mutableConnection.value.catalog == null) {
@@ -218,8 +291,15 @@ class ElevenViewModel @JvmOverloads constructor(
                 visibleScope = null
                 chartPrewarmJob?.cancel()
                 chartPrewarmJob = null
-                chartPrewarmRequests.values.forEach { it.cancel() }
-                chartPrewarmRequests.clear()
+                chartPrewarmSelectionJob?.cancel()
+                chartPrewarmSelectionJob = null
+                chartPrewarmCatalog = emptyList()
+                // The initial public-data pass belongs to the VM, like wallet warmup. Android
+                // may stop this Activity while the user types their PIN; keep that pass alive.
+                if (!startupMarketRunning) {
+                    chartPrewarmRequests.values.forEach { it.cancel() }
+                    chartPrewarmRequests.clear()
+                }
                 chartJobs.values.forEach { it.cancel() }
                 chartJobs.clear()
             }
@@ -276,7 +356,6 @@ class ElevenViewModel @JvmOverloads constructor(
     }
 
     private fun acceptCatalog(catalog: LiveCatalog) {
-        val existing = repository.catalog.value.associateBy { it.id }
         val changedBasis = catalog.instruments.filter { incoming ->
             val previous = instrumentIndex[incoming.stock.id]
             previous != null && (previous.quoteBasis != incoming.quoteBasis ||
@@ -294,11 +373,15 @@ class ElevenViewModel @JvmOverloads constructor(
             chartGeneration[key] = (chartGeneration[key] ?: 0) + 1
         }
         instrumentIndex = catalog.instruments.associateBy { it.stock.id }
+        restoreStartupCharts()
         catalogReceivedElapsed = SystemClock.elapsedRealtime()
         mutableConnection.value = mutableConnection.value.copy(
             catalog = catalog,
             offline = false,
             refreshFailed = false,
+            chartContexts = mutableConnection.value.chartContexts.filterKeys { key ->
+                key.first in instrumentIndex && key.first !in changedBasis
+            },
             message = when {
                 catalog.instruments.isEmpty() -> "Waiting for market sources · updates automatically"
                 catalog.providers.all { it.status == "unavailable" } -> "Market sources unavailable · automatic recovery"
@@ -308,20 +391,24 @@ class ElevenViewModel @JvmOverloads constructor(
         )
         repository.replaceCatalog(catalog.instruments.map { instrument ->
             val id = instrument.stock.id
-            val retained = if (id in changedBasis) emptyMap() else existing[id]?.charts.orEmpty()
-            val charts = retained.mapValues { (range, points) ->
+            val retained = if (id in changedBasis) emptyMap() else repository.getStock(id)?.charts.orEmpty()
+            val charts = retained.filterKeys { range ->
+                chartReceivedElapsed[id to range]?.let { catalogReceivedElapsed - it < 300_000 } == true
+            }.mapValues { (range, points) ->
                 val key = id to range
                 val metadata = chartMetadata[key]
                 if (metadata == null) points else alignChartObservation(metadata.copy(points = points), instrument).points
             }
-            expireStock(instrument.stock.copy(charts = charts), catalog.receivedAt, 0L)
+            val stock = catalogExpiryCache.expire(instrument, catalog.receivedAt)
+            if (charts.isEmpty()) stock else stock.copy(charts = charts)
         })
+        catalogExpiryCache.retain(instrumentIndex.keys)
         prefetchMarketLogos()
         scheduleChartPrewarm()
         chartMetadata.keys.removeAll { it.first !in instrumentIndex }
         chartPrewarmAttempts.keys.removeAll { it.first !in instrumentIndex }
         // Identity survives a temporary quote/catalog outage; financial values never use this cache.
-        stockIdentities.putAll(repository.catalog.value.associateBy { it.id })
+        repository.catalog.value.forEach { stockIdentities[it.id] = it }
         if (stockFlow.snapshot().destination != com.elevencapital.core.stock.flow.StockDestination.Markets && stockFlow.snapshot().stock == null) {
             while (stockFlow.goBack()) { }
             mutableTab.value = RootTab.Markets
@@ -331,35 +418,49 @@ class ElevenViewModel @JvmOverloads constructor(
     }
 
     /** Warm the first Stocks screen while the user is still at device unlock. */
-    private fun prefetchMarketLogos() {
+    private fun prefetchMarketLogos(scope: CoroutineScope? = visibleScope) {
         if (marketLogosPrepared || repository.catalog.value.isEmpty()) return
-        val scope = visibleScope ?: return
+        if (scope == null || chartPrewarmTargets.isEmpty()) return
         marketLogosPrepared = true
         val application = getApplication<Application>()
-        val urls = selectMarketRows(liveRows(repository.catalog.value, mutableWatched.value), MarketQuery(), false)
-            .take(32)
-            .mapNotNull { it.stock.logo?.value?.takeIf { url -> url.startsWith("https://") } }
-            .filter(prefetchedMarketLogos::add)
-        if (urls.isEmpty()) return
-        scope.launch(Dispatchers.IO) {
-            urls.forEach { url ->
-                application.imageLoader.enqueue(ImageRequest.Builder(application).data(url).size(128, 128).build())
+        val stocks = chartPrewarmTargets.mapNotNull { repository.getStock(it.first) }
+        scope.launch {
+            try {
+                val urls = withContext(Dispatchers.Default) {
+                    stocks.mapNotNull { it.logo?.value?.takeIf { url -> url.startsWith("https://") } }.distinct()
+                }.filter { it !in prefetchedMarketLogos }
+                withContext(Dispatchers.IO) {
+                    urls.forEach { url ->
+                        application.imageLoader.enqueue(ImageRequest.Builder(application).data(url).size(128, 128).build())
+                    }
+                }
+                prefetchedMarketLogos.addAll(urls)
+            } catch (cancelled: CancellationException) {
+                marketLogosPrepared = false
+                throw cancelled
             }
         }
     }
 
-    /** Warm the default detail graph for the first ten rows in each source's own list. */
+    /** Warm all twenty selected rows in each source's own launch order. */
     private fun scheduleChartPrewarm() {
-        if (client == null) return
-        val rows = liveRows(repository.catalog.value, emptySet())
-        val groups = listOf(MarketSource.BACKED, MarketSource.BACKPACK, MarketSource.PRESTOCKS).map { source ->
-            selectMarketRows(rows, MarketQuery(source = source), false).take(10)
-                .map { it.stock.id to ChartRange.ONE_DAY }
-        }
-        // Interleave sources so the first ten of one provider cannot starve the others.
-        val targets = (0 until 10).flatMap { position -> groups.mapNotNull { it.getOrNull(position) } }.distinct()
-        if (targets != chartPrewarmTargets) chartPrewarmTargets = targets
+        if (client == null || startupMarketRunning) return
         val scope = visibleScope ?: return
+        val instruments = mutableConnection.value.catalog?.instruments.orEmpty()
+        // Quotes and statistics do not change the default ordering. Sorting the entire
+        // catalog three times on every price tick makes background warming visible as jank.
+        if (!hasSameMarketListings(chartPrewarmCatalog, instruments)) {
+            chartPrewarmCatalog = instruments
+            chartPrewarmSelectionJob?.cancel()
+            chartPrewarmSelectionJob = scope.launch {
+                val targets = withContext(Dispatchers.Default) { marketPrewarmTargets(instruments) }
+                chartPrewarmTargets = targets
+                marketLogosPrepared = false
+                prefetchMarketLogos()
+                updateSubscription()
+                chartPrewarmWakeups.trySend(Unit)
+            }
+        }
         if (chartPrewarmJob?.isActive != true) {
             chartPrewarmJob = scope.launch {
                 launch {
@@ -369,30 +470,35 @@ class ElevenViewModel @JvmOverloads constructor(
                     }
                 }
                 for (ignored in chartPrewarmWakeups) {
-                    val batch = chartPrewarmTargets
-                    coroutineScope {
-                        val nextIndex = AtomicInteger()
-                        repeat(3) {
-                            launch {
-                                while (currentCoroutineContext().isActive) {
-                                    val key = batch.getOrNull(nextIndex.getAndIncrement()) ?: break
-                                    while (activeChart != null && currentCoroutineContext().isActive) delay(150)
-                                    prewarmChart(key)
-                                }
-                            }
-                        }
-                    }
+                    prewarmChartBatch(chartPrewarmTargets)
                 }
             }
         }
         chartPrewarmWakeups.trySend(Unit)
     }
 
+    private fun hasFreshPrewarmedChart(key: Pair<StockId, ChartRange>): Boolean =
+        chartMetadata[key]?.let { it.status == "ok" && it.points.isNotEmpty() } == true &&
+            chartReceivedElapsed[key]?.let { SystemClock.elapsedRealtime() - it < 240_000 } == true
+
+    private suspend fun prewarmChartBatch(targets: List<Pair<StockId, ChartRange>>) = coroutineScope {
+        // One lane per provider keeps slow token-history requests from starving Backpack.
+        // At most three requests run together; each lane retains its launch priority order.
+        for (lane in targets.groupBy { it.first.value.substringBefore(':') }.values) {
+            launch {
+                for (key in lane) {
+                    while (activeChart != null) delay(150)
+                    prewarmChart(key)
+                }
+            }
+        }
+    }
+
     private suspend fun prewarmChart(key: Pair<StockId, ChartRange>) {
         val dataClient = client ?: return
         if (key !in chartPrewarmTargets || key.first !in instrumentIndex) return
         val now = SystemClock.elapsedRealtime()
-        if (chartReceivedElapsed[key]?.let { now - it < 240_000 } == true ||
+        if (hasFreshPrewarmedChart(key) ||
             chartPrewarmAttempts[key]?.let { now - it < 60_000 } == true ||
             chartPrewarmRequests[key]?.isActive == true) return
         chartPrewarmAttempts[key] = now
@@ -433,23 +539,16 @@ class ElevenViewModel @JvmOverloads constructor(
 
     private fun expireOldData() {
         val snapshot = mutableConnection.value.catalog ?: return
-        val elapsed = SystemClock.elapsedRealtime() - catalogReceivedElapsed
-        repository.replaceCatalog(repository.catalog.value.map { stock -> expireStock(stock, snapshot.receivedAt, elapsed) })
+        val now = SystemClock.elapsedRealtime()
+        val elapsed = now - catalogReceivedElapsed
+        val current = repository.catalog.value
+        val next = current.map { stock -> expireStock(stock, snapshot.receivedAt, elapsed, now) }
+        if (next.indices.any { next[it] !== current[it] }) repository.replaceCatalog(next)
     }
 
-    private fun expireStock(stock: Stock, snapshotAt: java.time.Instant, elapsedMillis: Long): Stock {
-        val fetchedAt = instrumentIndex[stock.id]?.quoteReceivedAt
-        val expired = !isReferenceDataFresh(fetchedAt, snapshotAt, elapsedMillis)
-        val now = SystemClock.elapsedRealtime()
-        return stock.copy(
-            quote = if (expired) stock.quote.copy(price = null, changeAmount = null, changePercent = null) else stock.quote,
-            statistics = stock.statistics?.reference?.expire(snapshotAt, elapsedMillis)?.toStatistics() ?: stock.statistics,
-            activity = stock.activity?.expire(snapshotAt, elapsedMillis),
-            charts = stock.charts.filterKeys { range ->
-                chartReceivedElapsed[stock.id to range]?.let { now - it < 300_000 } == true
-            },
-        )
-    }
+    private fun expireStock(stock: Stock, snapshotAt: Instant, elapsedMillis: Long, now: Long): Stock =
+        expireMarketStock(stock, instrumentIndex[stock.id]?.quoteReceivedAt, snapshotAt, elapsedMillis,
+            now, chartReceivedElapsed)
 
     /** Viewport subscriptions share one socket with the selected detail. */
     fun setVisibleStockIds(ids: Set<StockId>) = setVisibleStockIds("markets", ids)
@@ -460,7 +559,7 @@ class ElevenViewModel @JvmOverloads constructor(
     }
 
     private fun updateSubscription() {
-        client?.subscribe(MarketSubscription(visibleStockIds, activeChart))
+        client?.subscribe(MarketSubscription(marketWarmSubscriptionIds(visibleStockIds, chartPrewarmTargets), activeChart))
     }
 
     /** An outgoing animated detail must not unsubscribe a newer screen. */
@@ -482,7 +581,16 @@ class ElevenViewModel @JvmOverloads constructor(
             chartJobs.values.forEach { it.cancel() }
             chartJobs.clear()
             activeChart = key
+            // A visible detail takes priority over speculative HTTP work. Reuse its own
+            // in-flight warmup, while the other workers wait until detail closes.
+            chartPrewarmRequests.filterKeys { it != key }.values.forEach { it.cancel() }
             updateSubscription()
+        }
+        val receivedAt = chartReceivedElapsed[key]
+        if (receivedAt != null && SystemClock.elapsedRealtime() - receivedAt < 300_000) {
+            chartMetadata[key]?.let { chart ->
+                instrumentIndex[id]?.let { instrument -> publishChart(chart, instrument) }
+            }
         }
         if (chartJobs[key]?.isActive == true) return
         if (chartReceivedElapsed[key]?.let { SystemClock.elapsedRealtime() - it < 60_000 } == true) return
@@ -493,7 +601,7 @@ class ElevenViewModel @JvmOverloads constructor(
                 chartMessages = mutableConnection.value.chartMessages + (key to "Loading price history…"),
             )
             try {
-                val chart = chartPrewarmRequests[key]?.await() ?: dataClient.chart(id, range)
+                val chart = awaitChartPrewarmOrLoad(chartPrewarmRequests[key]) { dataClient.chart(id, range) }
                 // A slower HTTP response must never replace a newer socket chart.
                 if (activeChart == key && (chartGeneration[key] ?: 0) == generation) acceptChart(chart)
             } catch (cancelled: CancellationException) {
@@ -513,11 +621,59 @@ class ElevenViewModel @JvmOverloads constructor(
     private fun acceptChart(chart: LiveChart, prewarmed: Boolean = false) {
         val key = chart.stockId to chart.range
         if (activeChart != key && !prewarmed) return
-        val stock = repository.getStock(chart.stockId) ?: return
+        if (repository.getStock(chart.stockId) == null) return
         val instrument = instrumentIndex[chart.stockId] ?: return
-        if (stock.quote.currencyCode != chart.currency || !isChartBasisCompatible(chart, instrument)) return
+        if (!isChartDisplayCompatible(chart, instrument)) return
         chartReceivedElapsed[key] = SystemClock.elapsedRealtime()
-        val aligned = instrumentIndex[chart.stockId]?.let { alignChartObservation(chart, it) } ?: chart
+        chartMetadata[key] = chart
+        persistStartupCharts()
+        // Keep hidden warmups private: each published graph would otherwise invalidate the
+        // full market catalog and root UI while the user scrolls or uses their wallet.
+        if (prewarmed && activeChart != key) return
+        publishChart(chart, instrument)
+    }
+
+    private fun restoreStartupCharts() {
+        if (restoredStartupCharts.isEmpty()) return
+        val wallNow = System.currentTimeMillis()
+        val elapsedNow = SystemClock.elapsedRealtime()
+        restoredStartupCharts = restoredStartupCharts.filter { entry ->
+            val chart = entry.chart
+            val instrument = instrumentIndex[chart.stockId] ?: return@filter true
+            val age = wallNow - entry.receivedAtMillis
+            if (age in 0 until 300_000 && isChartDisplayCompatible(chart, instrument)) {
+                val key = chart.stockId to chart.range
+                val receipt = elapsedNow - age
+                if (chartReceivedElapsed[key]?.let { it >= receipt } != true) {
+                    chartMetadata[key] = chart
+                    chartReceivedElapsed[key] = receipt
+                }
+            }
+            false
+        }
+    }
+
+    private fun persistStartupCharts() {
+        val cache = startupChartCache ?: return
+        if (chartPrewarmTargets.isEmpty()) return
+        chartCacheWriteJob?.cancel()
+        chartCacheWriteJob = viewModelScope.launch {
+            delay(500)
+            val wallNow = System.currentTimeMillis()
+            val elapsedNow = SystemClock.elapsedRealtime()
+            val entries = chartPrewarmTargets.mapNotNull { key ->
+                val chart = chartMetadata[key] ?: return@mapNotNull null
+                val receipt = chartReceivedElapsed[key] ?: return@mapNotNull null
+                CachedStartupChart(chart, wallNow - (elapsedNow - receipt))
+            }
+            cache.write(entries)
+        }
+    }
+
+    private fun publishChart(chart: LiveChart, instrument: LiveInstrument) {
+        val key = chart.stockId to chart.range
+        if (!isChartDisplayCompatible(chart, instrument)) return
+        val aligned = alignChartObservation(chart, instrument)
         chartMetadata[key] = aligned
         repository.replaceCatalog(repository.catalog.value.map {
             if (it.id == chart.stockId) it.copy(charts = it.charts + (chart.range to aligned.points)) else it
@@ -530,6 +686,17 @@ class ElevenViewModel @JvmOverloads constructor(
         }
         mutableConnection.value = mutableConnection.value.copy(
             chartMessages = mutableConnection.value.chartMessages + (key to message),
+            chartContexts = if (chart.status == "ok" && chart.points.isNotEmpty()) {
+                val sourceLabel = when {
+                    chart.basis == "underlying_share_reference" ->
+                        "Underlying share reference · ${chart.currency}"
+                    !isChartBasisCompatible(chart, instrument) && chart.basis == "onchain_token_market" ->
+                        "Token market history · ${chart.currency}"
+                    else -> null
+                }
+                mutableConnection.value.chartContexts +
+                    (key to DetailChartContext(chart.range, chart.currency, sourceLabel))
+            } else mutableConnection.value.chartContexts - key,
         )
     }
 
@@ -552,9 +719,14 @@ class ElevenViewModel @JvmOverloads constructor(
     }
 
     fun liveHoldingRows(stocks: List<Stock>, watchedIds: Set<StockId>): List<PrimaryStockRow> {
-        val known = stockIdentities + stocks.associateBy { it.id }
-        return walletPortfolio.value.holdings.mapNotNull { position ->
-            val stock = known[position.stockId] ?: return@mapNotNull null
+        val positions = walletPortfolio.value.holdings
+        if (positions.isEmpty()) return emptyList()
+        // Normal UI calls use the repository's indexed snapshot. Preserve custom snapshot
+        // semantics without merging thousands of identities for a handful of holdings.
+        val supplied = if (stocks === repository.catalog.value) null else stocks.associateBy { it.id }
+        return positions.mapNotNull { position ->
+            val stock = (if (supplied == null) repository.getStock(position.stockId) else supplied[position.stockId])
+                ?: stockIdentities[position.stockId] ?: return@mapNotNull null
             PrimaryStockRow(stock = stock, quantity = position.quantity, holdingValue = position.valueUsd,
                 holdingValueCurrency = "USD", watched = stock.id in watchedIds)
         }
@@ -676,6 +848,7 @@ class ElevenViewModel @JvmOverloads constructor(
     fun selectPurchasePaymentAsset(id: String) { purchaseCoordinator?.selectPaymentAsset(id) }
     fun selectPurchaseDestination(id: String?) { purchaseCoordinator?.selectDestination(id) }
     fun requestPurchaseQuote(amount: String) { purchaseCoordinator?.requestQuote(amount) }
+    fun purchaseNow(amount: String) { purchaseCoordinator?.requestAndExecuteBuy(amount) }
     fun executePurchase() { purchaseCoordinator?.executeReviewedQuote() }
     fun editPurchaseQuote() { purchaseCoordinator?.editQuote() }
     fun refreshPurchaseOptions() { purchaseCoordinator?.refreshOptions() }
@@ -719,6 +892,113 @@ class ElevenViewModel @JvmOverloads constructor(
         mutableWatched.value = mutableWatched.value.let { if (id in it) it - id else it + id }
         preferences?.edit()?.putStringSet("stockIds", mutableWatched.value.map { it.value }.toSet())?.apply()
     }
+}
+
+internal suspend fun awaitChartPrewarmOrLoad(
+    prewarm: Deferred<LiveChart>?,
+    load: suspend () -> LiveChart,
+): LiveChart {
+    // A canceled worker removes its map entry in finally, which may run after the user
+    // opens that listing again. Its startup deadline may also expire during this await.
+    currentCoroutineContext().ensureActive()
+    val pending = prewarm?.takeUnless { it.isCancelled } ?: return load()
+    return try {
+        pending.await()
+    } catch (cancelled: CancellationException) {
+        // Retry only when the shared warmup was canceled; leaving detail must still stop work.
+        currentCoroutineContext().ensureActive()
+        load()
+    }
+}
+
+/** Only catalog membership, order and listing identity can change the featured warmup rows. */
+internal fun hasSameMarketListings(previous: List<LiveInstrument>, next: List<LiveInstrument>): Boolean =
+    previous.size == next.size && previous.indices.all { index ->
+        val before = previous[index].stock
+        val after = next[index].stock
+        before.id == after.id && before.symbol == after.symbol && before.name == after.name
+    }
+
+internal fun marketPrewarmTargets(instruments: List<LiveInstrument>): List<Pair<StockId, ChartRange>> {
+    val rows = instruments.map { PrimaryStockRow(it.stock) }
+    val groups = listOf(MarketSource.BACKED, MarketSource.BACKPACK, MarketSource.PRESTOCKS).map { source ->
+        selectMarketRows(rows, MarketQuery(source = source), false).take(20)
+            .map { it.stock.id to ChartRange.ONE_DAY }
+    }
+    // Interleave sources so the first twenty of one provider cannot starve the others.
+    return (0 until 20).flatMap { position -> groups.mapNotNull { it.getOrNull(position) } }.distinct()
+}
+
+/** Keep the selected stocks' quotes live on Home as well as in the Stocks viewport. */
+internal fun marketWarmSubscriptionIds(
+    visible: Set<StockId>, targets: List<Pair<StockId, ChartRange>>,
+): Set<StockId> = (visible.asSequence() + targets.asSequence().map { it.first }).distinct().take(100).toSet()
+
+/** Unchanged stale rows must not recreate their expired quote and statistics on every delta. */
+internal class MarketCatalogExpiryCache {
+    private data class Entry(val source: Stock, val expiry: Int, val stock: Stock)
+    private val entries = mutableMapOf<StockId, Entry>()
+
+    fun retain(ids: Set<StockId>) { entries.keys.retainAll(ids) }
+
+    fun expire(instrument: LiveInstrument, snapshotAt: Instant): Stock {
+        val source = instrument.stock
+        var expiry = if (isReferenceDataFresh(instrument.quoteReceivedAt, snapshotAt, 0)) 0 else 1
+        source.statistics?.reference?.let { reference ->
+            val sourceFresh = reference.updatedAt == null || isReferenceDataFresh(reference.updatedAt, snapshotAt, 0)
+            reference.metrics.forEach { (key, metric) ->
+                if (metric.value != null && (!sourceFresh || !isReferenceDataFresh(metric.receivedAt, snapshotAt, 0))) {
+                    expiry = expiry or (1 shl (key.ordinal + 1))
+                }
+            }
+        }
+        source.activity?.let { activity ->
+            if ((activity.volume24h != null || activity.netVolume24h != null) &&
+                (!isReferenceDataFresh(activity.receivedAt, snapshotAt, 0) ||
+                    (activity.updatedAt != null && !isReferenceDataFresh(activity.updatedAt, snapshotAt, 0)))) {
+                expiry = expiry or (1 shl 8)
+            }
+        }
+        val previous = entries[source.id]
+        if (previous != null && previous.source === source && previous.expiry == expiry) return previous.stock
+        val stock = expireMarketStock(source, instrument.quoteReceivedAt, snapshotAt, 0, 0, emptyMap())
+        entries[source.id] = Entry(source, expiry, stock)
+        return stock
+    }
+}
+
+/** Same freshness rules as the source models, without reallocating fresh or already empty rows. */
+internal fun expireMarketStock(
+    stock: Stock,
+    quoteReceivedAt: Instant?,
+    snapshotAt: Instant,
+    elapsedMillis: Long,
+    nowElapsed: Long,
+    chartReceivedElapsed: Map<Pair<StockId, ChartRange>, Long>,
+): Stock {
+    val quote = stock.quote.let { quote ->
+        if ((quote.price != null || quote.changeAmount != null || quote.changePercent != null) &&
+            !isReferenceDataFresh(quoteReceivedAt, snapshotAt, elapsedMillis)) {
+            quote.copy(price = null, changeAmount = null, changePercent = null)
+        } else quote
+    }
+    val statistics = stock.statistics?.let { statistics ->
+        val reference = statistics.reference
+        val expired = reference != null && reference.metrics.values.any { metric ->
+            metric.value != null && (!isReferenceDataFresh(metric.receivedAt, snapshotAt, elapsedMillis) ||
+                (reference.updatedAt != null && !isReferenceDataFresh(reference.updatedAt, snapshotAt, elapsedMillis)))
+        }
+        if (expired) requireNotNull(reference).expire(snapshotAt, elapsedMillis).toStatistics() else statistics
+    }
+    val activity = stock.activity?.let { activity ->
+        if (activity.volume24h == null && activity.netVolume24h == null) activity
+        else activity.expire(snapshotAt, elapsedMillis)
+    }
+    fun chartFresh(range: ChartRange): Boolean =
+        chartReceivedElapsed[stock.id to range]?.let { nowElapsed - it < 300_000 } == true
+    val charts = if (stock.charts.keys.all(::chartFresh)) stock.charts else stock.charts.filterKeys(::chartFresh)
+    return if (quote === stock.quote && statistics === stock.statistics && activity === stock.activity &&
+        charts === stock.charts) stock else stock.copy(quote = quote, statistics = statistics, activity = activity, charts = charts)
 }
 
 enum class RootTab(val icon: String) {

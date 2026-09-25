@@ -55,4 +55,16 @@ class MarketChartObservationTest {
         assertSame(referenceChart, alignChartObservation(referenceChart, row))
     }
 
+    @Test fun `backed reference history can display without inheriting token quote observations`() {
+        val referenceHistory = chart.copy(currency = "USDC", basis = "underlying_share_reference")
+        assertTrue(isChartDisplayCompatible(referenceHistory, row))
+        assertFalse(isChartBasisCompatible(referenceHistory, row))
+        assertSame(referenceHistory, alignChartObservation(referenceHistory, row))
+
+        val backpack = row.copy(provider = "backpack")
+        assertFalse(isChartDisplayCompatible(referenceHistory, backpack))
+        assertTrue(isChartDisplayCompatible(chart.copy(status = "unavailable", basis = null,
+            points = emptyList()), row))
+    }
+
 }

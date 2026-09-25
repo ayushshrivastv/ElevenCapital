@@ -10,6 +10,18 @@ fun isChartBasisCompatible(chart: LiveChart, instrument: LiveInstrument): Boolea
     chart.stockId == instrument.stock.id && chart.currency == instrument.stock.quote.currencyCode &&
         chart.basis != null && chart.basis == instrument.quoteBasis
 
+/** Backed can publish a verified token or underlying-share series when the current quote uses the other basis. */
+fun isChartDisplayCompatible(chart: LiveChart, instrument: LiveInstrument): Boolean {
+    if (chart.stockId != instrument.stock.id) return false
+    if (chart.status != "ok") return chart.points.isEmpty()
+    if (isChartBasisCompatible(chart, instrument)) return true
+    return instrument.provider == "backed" &&
+        chart.basis in setOf("onchain_token_market", "underlying_share_reference") &&
+        instrument.quoteBasis in setOf("onchain_token_market", "underlying_share_reference") &&
+        chart.currency in setOf("USD", "USDC") &&
+        instrument.stock.quote.currencyCode in setOf("USD", "USDC")
+}
+
 fun alignChartObservation(chart: LiveChart, instrument: LiveInstrument): LiveChart {
     if (!isChartBasisCompatible(chart, instrument) || chart.status != "ok" || chart.points.isEmpty()) return chart
     val price = instrument.stock.quote.price ?: return chart

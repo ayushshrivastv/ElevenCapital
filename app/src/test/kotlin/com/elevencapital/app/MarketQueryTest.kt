@@ -8,6 +8,7 @@ import com.elevencapital.core.stock.StockQuote
 import java.math.BigDecimal
 import java.time.Instant
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MarketQueryTest {
@@ -30,6 +31,23 @@ class MarketQueryTest {
         val result = selectMarketRows(rows, MarketQuery(), false)
         assertEquals(setOf("backed:MSFTx", "backpack:MSFT"), ids(result).take(2).toSet())
         assertEquals(listOf("backed:SPYx", "backpack:NEW"), ids(result).drop(2))
+    }
+
+    @Test fun nikeAndSpacexListingsAreAlwaysInTheTopTenForAllAndTheirProviders() {
+        val symbols = listOf("MSFT", "SPCX", "TSLA", "GOOGL", "META", "NFLX", "AAPL", "NVDA", "AMZN", "BRK.B", "NKE")
+        val catalog = symbols.map { symbol ->
+            row("backpack:$symbol.US", "$symbol.US", symbol, "1", "0")
+        }
+        val result = selectMarketRows(catalog, MarketQuery(source = MarketSource.BACKPACK), false)
+        assertTrue(result.take(10).any { it.stock.id.value == "backpack:NKE.US" })
+        val bothProviders = catalog + symbols.map { symbol ->
+            row("backed:${symbol}x", "${symbol}x", symbol, "1", "0")
+        }
+        val all = selectMarketRows(bothProviders, MarketQuery(), false)
+        assertTrue(all.take(10).any { it.stock.id.value == "backpack:NKE.US" })
+        assertTrue(all.take(10).any { it.stock.id.value == "backed:SPCXx" })
+        val backed = selectMarketRows(bothProviders, MarketQuery(source = MarketSource.BACKED), false)
+        assertTrue(backed.take(10).any { it.stock.id.value == "backed:SPCXx" })
     }
 
     @Test fun defaultShowsFeaturedCompaniesFirstForBothProvidersWithoutReorderingTheRemainder() {

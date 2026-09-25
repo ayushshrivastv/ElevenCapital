@@ -54,7 +54,7 @@ data class StockQuote(
 ) {
     init {
         require(price == null || price.signum() >= 0) { "A stock price must not be negative." }
-        require(currencyCode.matches(Regex("[A-Z]{3}")) || currencyCode == "USDC") {
+        require(currencyCode == "USDC" || (currencyCode.length == 3 && currencyCode.all { it in 'A'..'Z' })) {
             "A quote unit must be an uppercase fiat currency code or USDC."
         }
     }

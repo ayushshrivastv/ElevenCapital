@@ -23,12 +23,14 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.OkHttpClient
@@ -124,11 +126,15 @@ class LiveMarketDataClient internal constructor(
         require(uri.userInfo == null && uri.query == null && uri.fragment == null)
     }
 
-    suspend fun catalog(): LiveCatalog = LiveMarketDataParser.catalog(request("/v1/stocks"))
+    // The HTTP callback decodes JSON off Main, but its continuation resumes on the caller's
+    // dispatcher. Validating thousands of instruments must stay off the UI thread too.
+    suspend fun catalog(): LiveCatalog = withContext(Dispatchers.Default) {
+        LiveMarketDataParser.catalog(request("/v1/stocks"))
+    }
 
-    suspend fun chart(id: StockId, range: ChartRange): LiveChart {
+    suspend fun chart(id: StockId, range: ChartRange): LiveChart = withContext(Dispatchers.Default) {
         val encodedId = URLEncoder.encode(id.value, "UTF-8").replace("+", "%20")
-        return LiveMarketDataParser.chart(request("/v1/stocks/$encodedId/charts?range=${range.name}"), id, range)
+        LiveMarketDataParser.chart(request("/v1/stocks/$encodedId/charts?range=${range.name}"), id, range)
     }
 
     /** One multiplexed foreground socket; every reconnect sends the latest subscription. */
@@ -348,6 +354,11 @@ object LiveMarketDataParser {
             require(marketActivity.currencyCode == currency) { "Quote and activity units must agree." }
             val price = quote.decimalOrNull("price")
             val logo = row.stringOrNull("logoUrl")?.takeIf { URI(it).scheme == "https" }
+            val companyLogo = if (id.value ==
+                "prestocks:Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw" &&
+                row.getString("symbol") == "ANTHROPIC") {
+                StockLogoReference("reference/anthropic/standalone")
+            } else logo?.let(::StockLogoReference)
             val description = row.stringOrNull("description")?.also {
                 require(it.length <= 20_000) { "Stock description exceeds the supported length." }
             }?.takeIf(String::isNotBlank)
@@ -357,7 +368,7 @@ object LiveMarketDataParser {
                     id = id,
                     symbol = row.getString("symbol"),
                     name = row.getString("name"),
-                    logo = logo?.let(::StockLogoReference),
+                    logo = companyLogo,
                     quote = StockQuote(
                         price, currency,
                         quote.decimalOrNull("changeAmount"),

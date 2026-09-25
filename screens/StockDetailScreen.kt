@@ -40,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -90,12 +91,14 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.text.NumberFormat
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-import kotlin.math.ceil
 
 /** Optional, provider-owned facts needed by the terminal reference. */
 data class DetailPresentation(
@@ -128,6 +131,11 @@ enum class DetailPeriod(val label: String) {
 data class DetailInfoCell(val label: String, val value: String, val badge: String? = null)
 data class DetailChartBounds(val low: BigDecimal, val high: BigDecimal)
 data class DetailRangeChange(val amount: BigDecimal?, val percent: BigDecimal?)
+data class DetailChartContext(
+    val range: ChartRange,
+    val currency: String,
+    val sourceLabel: String? = null,
+)
 
 /** Display facts supplied by a stock-trade feed; no quote or participant is inferred. */
 data class DetailFeedRow(
@@ -153,7 +161,7 @@ data class DetailNewsItem(
 )
 
 enum class DetailSection(val label: String) {
-    OVERVIEW("Overview"), TERMINAL("Terminal"), LIVE_FEED("Live Feed"),
+    OVERVIEW("Overview"), ORDER_BOOK("Order book"),
 }
 
 /** The toolbar and order actions stay fixed; the section strip pins below the toolbar. */
@@ -168,11 +176,11 @@ fun StockDetailScreen(
     modifier: Modifier = Modifier,
     detail: DetailPresentation = DetailPresentation(),
     initialSection: DetailSection = DetailSection.OVERVIEW,
-    initiallyExpanded: Boolean = false,
     listState: LazyListState? = null,
     onRangeSelected: (ChartRange) -> Unit = {},
     priceNotice: String? = null,
     chartMessage: String? = null,
+    chartContext: DetailChartContext? = null,
     useQuoteChangeForAllRanges: Boolean = true,
     onExit: () -> Unit = {},
     onSell: () -> Unit = {},
@@ -181,8 +189,8 @@ fun StockDetailScreen(
     var range by remember(stock.id) { mutableStateOf(ChartRange.ONE_DAY) }
     var showCandles by remember(stock.id) { mutableStateOf(!stock.id.value.startsWith("prestocks:")) }
     var section by remember(stock.id) { mutableStateOf(initialSection) }
-    var expanded by remember(stock.id) { mutableStateOf(initiallyExpanded) }
     val resolvedListState = listState ?: key(stock.id) { rememberLazyListState() }
+    val scrollScope = rememberCoroutineScope()
     val points = stock.charts[range].orEmpty()
     val currentRangeCallback by rememberUpdatedState(onRangeSelected)
     val currentExitCallback by rememberUpdatedState(onExit)
@@ -192,7 +200,7 @@ fun StockDetailScreen(
     LaunchedEffect(stock.id, range) { currentRangeCallback(range) }
 
     BoxWithConstraints(modifier.fillMaxSize().background(P.Background)) {
-        // The other sections retain their height while Overview ends at its listing row.
+        // Order book retains the viewport height while Overview ends at its listing row.
         val minimumSectionHeight = (maxHeight - rd(237f)).coerceAtLeast(rd(0f))
         Column(Modifier.fillMaxSize()) {
             DetailToolbar(stock, detail, isWatched, onBack, onWatch)
@@ -211,12 +219,16 @@ fun StockDetailScreen(
                         )
                         Spacer(Modifier.height(rd(24f)))
                         DetailRanges(range, showCandles, { range = it }) { showCandles = !showCandles }
-                        DetailPriceChart(stock, range, points, detail.chartBounds[range], chartMessage, showCandles)
+                        DetailPriceChart(stock, range, points, detail.chartBounds[range],
+                            chartMessage, chartContext, showCandles)
                         Spacer(Modifier.height(rd(30f)))
                     }
                 }
                 stickyHeader(key = "sections") {
-                    DetailSections(section) { section = it }
+                    DetailSections(section) {
+                        section = it
+                        scrollScope.launch { resolvedListState.animateScrollToItem(1) }
+                    }
                 }
                 item(key = "body") {
                     Box(Modifier.fillMaxWidth()
@@ -238,10 +250,7 @@ fun StockDetailScreen(
                         ) { visibleSection ->
                             when (visibleSection) {
                                 DetailSection.OVERVIEW -> DetailOverview(stock, detail, openExplorer)
-                                DetailSection.TERMINAL -> DetailTerminal(stock, detail, expanded) {
-                                    expanded = !expanded
-                                }
-                                DetailSection.LIVE_FEED -> DetailLiveFeed(stock, detail.feedRows)
+                                DetailSection.ORDER_BOOK -> DetailOrderBook()
                             }
                         }
                     }
@@ -404,29 +413,127 @@ private fun DetailPriceChart(
     points: List<StockPricePoint>,
     suppliedBounds: DetailChartBounds?,
     chartMessage: String?,
+    chartContext: DetailChartContext?,
     showCandles: Boolean,
 ) {
+    val context = chartContext?.takeIf { it.range == range }
+    val currency = context?.currency ?: stock.quote.currencyCode
+    val timeDomain = remember(points, range, context) {
+        chartTimeDomain(points, range, anchorToSelectedRange = context != null)
+    }
+    val visiblePoints = remember(points, timeDomain, context) {
+        if (context == null) points else points.filter {
+            !it.timestamp.isBefore(timeDomain.start) && !it.timestamp.isAfter(timeDomain.end)
+        }
+    }
     if (showCandles) {
-        DetailCandlestickChart(stock, range, points, suppliedBounds, chartMessage)
+        DetailCandlestickChart(stock, range, visiblePoints, suppliedBounds,
+            chartMessage, currency, timeDomain)
     } else {
-        DetailLinePriceChart(stock, range, points, suppliedBounds, chartMessage)
+        DetailLinePriceChart(stock, range, visiblePoints, suppliedBounds,
+            chartMessage, currency, timeDomain)
+    }
+    if (visiblePoints.isNotEmpty() && context?.sourceLabel != null) {
+        RefText(context.sourceLabel, 11f, P.Muted,
+            modifier = Modifier.padding(start = rd(22f), top = rd(3f)))
     }
 }
 
-private data class ObservedCandle(
+internal data class ObservedCandle(
+    val timeFraction: Float,
     val open: Double,
     val high: Double,
     val low: Double,
     val close: Double,
 )
 
-/** OHLC here describes observed prices in each screen-width bucket, not exchange candles. */
-private fun observedCandles(points: List<StockPricePoint>): List<ObservedCandle> {
+internal data class ChartTimeDomain(val start: Instant, val end: Instant) {
+    fun fraction(timestamp: Instant): Float {
+        val span = (end.toEpochMilli() - start.toEpochMilli()).coerceAtLeast(1L)
+        if (start == end) return .5f
+        return ((timestamp.toEpochMilli() - start.toEpochMilli()).toDouble() / span)
+            .toFloat().coerceIn(0f, 1f)
+    }
+}
+
+internal fun chartTimeDomain(
+    points: List<StockPricePoint>,
+    range: ChartRange,
+    anchorToSelectedRange: Boolean,
+): ChartTimeDomain {
+    val last = points.lastOrNull()?.timestamp ?: Instant.EPOCH
+    if (!anchorToSelectedRange || points.isEmpty()) {
+        return ChartTimeDomain(points.firstOrNull()?.timestamp ?: last, last)
+    }
+    val start = when (range) {
+        ChartRange.ONE_HOUR -> last.minus(1, ChronoUnit.HOURS)
+        ChartRange.ONE_DAY -> last.minus(1, ChronoUnit.DAYS)
+        ChartRange.ONE_WEEK -> last.minus(7, ChronoUnit.DAYS)
+        ChartRange.ONE_MONTH -> last.minus(30, ChronoUnit.DAYS)
+        ChartRange.YEAR_TO_DATE -> last.atZone(ZoneOffset.UTC).withDayOfYear(1)
+            .toLocalDate().atStartOfDay(ZoneOffset.UTC).toInstant()
+    }
+    return ChartTimeDomain(start, last)
+}
+
+/** Each candle summarizes actual observations in a fixed time interval, not exchange OHLC. */
+internal fun observedCandleBucketCount(observationCount: Int): Int =
+    ((observationCount + 2) / 3).coerceIn(1, 48)
+
+internal fun observedCandles(
+    points: List<StockPricePoint>,
+    bucketCount: Int = observedCandleBucketCount(points.size),
+    timeDomain: ChartTimeDomain = chartTimeDomain(points, ChartRange.ONE_DAY, false),
+): List<ObservedCandle> {
     if (points.isEmpty()) return emptyList()
-    val bucketSize = ceil(points.size / 48.0).toInt().coerceAtLeast(1)
-    return points.chunked(bucketSize).map { bucket ->
+    if (points.size == 1) {
+        val price = points.first().price.toDouble()
+        return listOf(ObservedCandle(timeDomain.fraction(points.first().timestamp),
+            price, price, price, price))
+    }
+    val buckets = points.groupBy { point ->
+        (timeDomain.fraction(point.timestamp) * bucketCount).toInt().coerceIn(0, bucketCount - 1)
+    }
+    return buckets.toSortedMap().map { (index, bucket) ->
         val prices = bucket.map { it.price.toDouble() }
-        ObservedCandle(prices.first(), prices.maxOrNull()!!, prices.minOrNull()!!, prices.last())
+        ObservedCandle((index + .5f) / bucketCount,
+            prices.first(), prices.maxOrNull()!!, prices.minOrNull()!!, prices.last())
+    }
+}
+
+internal fun paddedChartBounds(low: Double, high: Double): Pair<Double, Double> {
+    val span = (high - low).coerceAtLeast(0.0)
+    val padding = if (span > 0.0) span * .08 else high.coerceAtLeast(0.0) * .005 + 1e-9
+    return (low - padding).coerceAtLeast(0.0) to high + padding
+}
+
+private fun chartTimeLabels(points: List<StockPricePoint>, range: ChartRange,
+    timeDomain: ChartTimeDomain): List<String> {
+    if (points.isEmpty()) return emptyList()
+    val start = timeDomain.start.toEpochMilli()
+    val span = (timeDomain.end.toEpochMilli() - start).coerceAtLeast(0L)
+    val pattern = when (range) {
+        ChartRange.ONE_HOUR -> "HH:mm"
+        ChartRange.ONE_DAY -> "d HH:mm"
+        ChartRange.ONE_WEEK, ChartRange.ONE_MONTH, ChartRange.YEAR_TO_DATE -> "MMM d"
+    }
+    val formatter = DateTimeFormatter.ofPattern(pattern, Locale.US).withZone(ZoneId.systemDefault())
+    return (0 until 4).map { tick ->
+        formatter.format(Instant.ofEpochMilli(start + (span * (tick + .5f) / 4f).toLong()))
+    }
+}
+
+@Composable
+private fun DetailChartTimeAxis(points: List<StockPricePoint>, range: ChartRange,
+    timeDomain: ChartTimeDomain) {
+    Row(Modifier.fillMaxWidth().height(rd(28f))
+        .padding(start = rd(12f), end = rd(78f)),
+        verticalAlignment = Alignment.CenterVertically) {
+        chartTimeLabels(points, range, timeDomain).forEach { label ->
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                RefText(label, 11f, P.Muted, maxLines = 1)
+            }
+        }
     }
 }
 
@@ -437,28 +544,30 @@ private fun DetailCandlestickChart(
     points: List<StockPricePoint>,
     suppliedBounds: DetailChartBounds?,
     chartMessage: String?,
+    currency: String,
+    timeDomain: ChartTimeDomain,
 ) {
-    val candles = remember(points) { observedCandles(points) }
+    val bucketCount = observedCandleBucketCount(points.size)
+    val candles = remember(points, timeDomain, bucketCount) {
+        observedCandles(points, bucketCount, timeDomain)
+    }
     val observedLow = candles.minOfOrNull { it.low } ?: 0.0
     val observedHigh = candles.maxOfOrNull { it.high } ?: 1.0
     val rawLow = if (candles.isEmpty()) suppliedBounds?.low?.toDouble() ?: 0.0
         else minOf(suppliedBounds?.low?.toDouble() ?: observedLow, observedLow)
     val rawHigh = if (candles.isEmpty()) suppliedBounds?.high?.toDouble() ?: 1.0
         else maxOf(suppliedBounds?.high?.toDouble() ?: observedHigh, observedHigh)
-    val extra = ((rawHigh - rawLow) * .08).takeIf { it > 0.0 }
-        ?: (rawHigh * .005).coerceAtLeast(.0001)
-    val minimum = rawLow - extra
-    val maximum = rawHigh + extra
+    val (minimum, maximum) = paddedChartBounds(rawLow, rawHigh)
     val delta = maximum - minimum
     val levels = listOf(1f, .67f, .33f, 0f)
     val referenceDp = rd(1f)
     val referencePixel = with(LocalDensity.current) { referenceDp.toPx() }
     val leftInsetPx = 12f * referencePixel
-    val rightInsetPx = 60f * referencePixel
+    val rightInsetPx = 78f * referencePixel
     val topInsetPx = 24f * referencePixel
     val bottomInsetPx = 20f * referencePixel
     val gridStrokePx = .7f * referencePixel
-    val maxBodyWidthPx = 8f * referencePixel
+    val maxBodyWidthPx = 40f * referencePixel
     val minBodyWidthPx = 1.5f * referencePixel
     val wickStrokePx = 1f * referencePixel
     val minBodyHeightPx = 1.4f * referencePixel
@@ -483,10 +592,10 @@ private fun DetailCandlestickChart(
                     drawLine(P.White.copy(alpha = .07f), Offset(lineX, top), Offset(lineX, bottom), gridStrokePx)
                 }
                 if (candles.isNotEmpty()) {
-                    val step = (right - left) / candles.size
-                    val bodyWidth = (step * .62f).coerceAtMost(maxBodyWidthPx).coerceAtLeast(minBodyWidthPx)
-                    candles.forEachIndexed { index, candle ->
-                        val x = left + step * (index + .5f)
+                    val bodyWidth = ((right - left) / bucketCount * .92f)
+                        .coerceAtMost(maxBodyWidthPx).coerceAtLeast(minBodyWidthPx)
+                    candles.forEach { candle ->
+                        val x = left + (right - left) * candle.timeFraction
                         val color = if (candle.close >= candle.open) P.Lime else P.Pink
                         val highY = y(candle.high)
                         val lowY = y(candle.low)
@@ -508,7 +617,7 @@ private fun DetailCandlestickChart(
                     verticalArrangement = Arrangement.SpaceBetween) {
                     levels.forEach { level ->
                         val value = minimum + (maximum - minimum) * level
-                        RefText(money(BigDecimal.valueOf(value), stock.quote.currencyCode,
+                        RefText(money(BigDecimal.valueOf(value), currency,
                             includeCurrency = false), 11f, P.Muted)
                     }
                 }
@@ -520,19 +629,7 @@ private fun DetailCandlestickChart(
                     modifier = Modifier.align(Alignment.Center).padding(horizontal = rd(30f)), maxLines = 3)
             }
         }
-        Row(Modifier.fillMaxWidth().height(rd(28f)).padding(horizontal = rd(42f)),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically) {
-            if (points.isNotEmpty()) {
-                val format = DateTimeFormatter.ofPattern(
-                    if (range == ChartRange.ONE_HOUR) "HH:mm" else "MMM d", Locale.US)
-                    .withZone(ZoneOffset.UTC)
-                repeat(4) { tick ->
-                    val index = ((points.lastIndex * (tick + .5f)) / 4f).roundToInt().coerceIn(points.indices)
-                    RefText(format.format(points[index].timestamp).replace("Sep ", "Sept "), 11f, P.Muted)
-                }
-            }
-        }
+        DetailChartTimeAxis(points, range, timeDomain)
     }
 }
 
@@ -543,6 +640,8 @@ private fun DetailLinePriceChart(
     points: List<StockPricePoint>,
     suppliedBounds: DetailChartBounds?,
     chartMessage: String?,
+    currency: String,
+    timeDomain: ChartTimeDomain,
 ) {
     val values = remember(points) { points.map { it.price.toDouble() } }
     val reveal = remember(stock.id) { Animatable(0f) }
@@ -556,8 +655,12 @@ private fun DetailLinePriceChart(
         reveal.animateTo(1f, tween(ReferenceMotion.ChartMillis, easing = ReferenceMotion.Easing))
     }
     val hasBounds = suppliedBounds != null || values.isNotEmpty()
-    val minimum = suppliedBounds?.low?.toDouble() ?: values.minOrNull() ?: 0.0
-    val maximum = suppliedBounds?.high?.toDouble() ?: values.maxOrNull() ?: 1.0
+    val rawLow = minOf(suppliedBounds?.low?.toDouble() ?: Double.POSITIVE_INFINITY,
+        values.minOrNull() ?: Double.POSITIVE_INFINITY).takeIf { it.isFinite() } ?: 0.0
+    val rawHigh = maxOf(suppliedBounds?.high?.toDouble() ?: Double.NEGATIVE_INFINITY,
+        values.maxOrNull() ?: Double.NEGATIVE_INFINITY).takeIf { it.isFinite() } ?: 1.0
+    val (minimum, maximum) = if (suppliedBounds != null && rawHigh > rawLow) rawLow to rawHigh
+        else paddedChartBounds(rawLow, rawHigh)
     val delta = (maximum - minimum).takeIf { it > 0.0 } ?: 1.0
     val stroke = rd(2f)
     val inset = rd(8f)
@@ -575,7 +678,7 @@ private fun DetailLinePriceChart(
                     val top = topGap.toPx()
                     val plotHeight = size.height - top - bottomGap.toPx()
                     fun point(index: Int): Offset = Offset(
-                        xInset + index.toFloat() / values.lastIndex * (size.width - xInset * 2),
+                        xInset + timeDomain.fraction(points[index].timestamp) * (size.width - xInset * 2),
                         top + (1f - ((values[index] - minimum) / delta).toFloat().coerceIn(0f, 1f)) * plotHeight,
                     )
                     val line = Path().apply {
@@ -611,9 +714,9 @@ private fun DetailLinePriceChart(
                 }
             }
             if (hasBounds) {
-                RefText(money(BigDecimal.valueOf(maximum), stock.quote.currencyCode), 13f, P.Muted,
+                RefText(money(BigDecimal.valueOf(maximum), currency), 13f, P.Muted,
                     modifier = Modifier.align(Alignment.TopEnd).padding(top = rd(13f)))
-                RefText(money(BigDecimal.valueOf(minimum), stock.quote.currencyCode), 13f, P.Muted,
+                RefText(money(BigDecimal.valueOf(minimum), currency), 13f, P.Muted,
                     modifier = Modifier.align(Alignment.BottomStart).padding(bottom = rd(5f)))
             }
             Box(Modifier.align(Alignment.Center).padding(top = rd(36f))) {
@@ -625,45 +728,36 @@ private fun DetailLinePriceChart(
                     modifier = Modifier.align(Alignment.Center).padding(horizontal = rd(30f)), maxLines = 3)
             }
         }
-        Row(Modifier.fillMaxWidth().height(rd(28f)).padding(horizontal = rd(42f)),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically) {
-            if (points.isNotEmpty()) {
-                val format = DateTimeFormatter.ofPattern(
-                    if (range == ChartRange.ONE_HOUR) "HH:mm" else "MMM d", Locale.US)
-                    .withZone(ZoneOffset.UTC)
-                repeat(4) { tick ->
-                    val index = ((points.lastIndex * (tick + .5f)) / 4f).roundToInt().coerceIn(points.indices)
-                    RefText(format.format(points[index].timestamp).replace("Sep ", "Sept "), 11f, P.Muted)
-                }
-            }
-        }
+        DetailChartTimeAxis(points, range, timeDomain)
     }
 }
 
 @Composable
 private fun DetailSections(section: DetailSection, onSelect: (DetailSection) -> Unit) {
     Row(Modifier.fillMaxWidth().height(rd(67f)).background(P.Background)
-        .padding(start = rd(22f), end = rd(21f)), verticalAlignment = Alignment.Top) {
-        DetailSection.entries.forEachIndexed { index, item ->
+        .padding(start = rd(22f), end = rd(21f)),
+        horizontalArrangement = Arrangement.spacedBy(rd(18f)),
+        verticalAlignment = Alignment.Top) {
+        DetailSection.entries.forEach { item ->
             val active = section == item
-            Column(Modifier.weight(if (index == 2) .79f else 1f)
+            Column(Modifier.height(rd(55f))
                 .semantics { selected = active }
                 .clickable(role = Role.Tab) { onSelect(item) }
                 .padding(top = rd(10f)), horizontalAlignment = Alignment.Start) {
                 RefText(item.label, 20f, if (active) P.White else P.Muted,
-                    FontWeight.Bold, modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(rd(11f)))
-                Box(Modifier.padding(horizontal = rd(6f)).width(rd(if (index == 0) 79f else 71f))
-                    .height(rd(2.5f)).background(if (active) P.Lime else Color.Transparent))
+                    FontWeight.Bold)
             }
         }
-        Box(Modifier.width(rd(31f)).height(rd(45f)), contentAlignment = Alignment.CenterEnd) {
-            RefIcon("history", 25f, P.Muted, Modifier.semantics {
-                contentDescription = "History"
-                disabled()
-            })
-        }
+    }
+}
+
+@Composable
+private fun DetailOrderBook() {
+    Column(Modifier.fillMaxWidth().padding(horizontal = rd(22f), vertical = rd(20f))) {
+        RefText("Order book unavailable", 20f, weight = FontWeight.Bold)
+        Spacer(Modifier.height(rd(9f)))
+        RefText("Live bid and ask prices are unavailable for this listing.", 15f, P.Muted,
+            maxLines = Int.MAX_VALUE)
     }
 }
 

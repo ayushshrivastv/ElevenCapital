@@ -19,6 +19,7 @@ const FeaturedCompanySummaries: Readonly<Record<string, string>> = {
   DIS: 'Disney operates entertainment studios, streaming and television services, and theme parks and resorts.',
   COIN: 'Coinbase provides crypto trading, custody and developer platform services.',
   AMD: 'AMD designs processors, graphics chips and adaptive computing products for data centers, PCs and embedded devices.',
+  NKE: 'Nike designs and sells athletic footwear, apparel, equipment and accessories under the Nike and Jordan brands.',
   AVGO: 'Broadcom develops semiconductor and infrastructure software products.',
 };
 

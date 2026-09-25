@@ -5,7 +5,7 @@ import { featuredCompanySummary } from '../src/featured-about.js';
 test('every featured Backpack and xStocks company has a business summary', () => {
   const featured = [
     'MSFT', 'SPCX', 'TSLA', 'GOOGL', 'META', 'NFLX', 'AAPL', 'NVDA', 'AMZN', 'BRK.B',
-    'JPM', 'V', 'MA', 'LLY', 'WMT', 'KO', 'DIS', 'COIN', 'AMD', 'AVGO',
+    'JPM', 'V', 'MA', 'LLY', 'WMT', 'KO', 'DIS', 'COIN', 'AMD', 'NKE',
   ];
   for (const symbol of featured) {
     const summary = featuredCompanySummary(symbol);
