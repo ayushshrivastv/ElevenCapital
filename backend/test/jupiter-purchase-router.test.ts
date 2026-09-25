@@ -66,7 +66,7 @@ test('cross-chain delegation stays preview-only even if the fallback claims exec
   assert.equal((await router.quote(input)).executionValidated, false); assert.equal(delegated, true);
 });
 
-test('only pinned Arbitrum assets to Anthropic Solana delegate to validated Relay execution', async () => {
+test('only pinned Ethereum and Arbitrum assets to Anthropic Solana delegate to validated Relay execution', async () => {
   const fromAddress = '0x1111111111111111111111111111111111111111';
   const input: LiFiQuoteRequest = { source: paymentAssetDefinition('ARBITRUM:USDC')!,
     destination: destinationFrom('SOLANA', RELAY_ANTHROPIC_MINT, 'ANTHROPIC', 9),
@@ -81,12 +81,13 @@ test('only pinned Arbitrum assets to Anthropic Solana delegate to validated Rela
         assert.equal(value.recipientAddress, WALLET);
         assert.equal(value.slippageBps, 50);
         if (value.sourceAssetId === 'ARBITRUM:USDC') assert.equal(value.amountBaseUnits, '1250000');
-        else { assert.equal(value.sourceAssetId, 'ARBITRUM:ETH'); assert.equal(value.amountBaseUnits, '500000000000000'); }
+        else { assert.ok(value.sourceAssetId === 'ARBITRUM:ETH' || value.sourceAssetId === 'ETHEREUM:ETH');
+          assert.equal(value.amountBaseUnits, '500000000000000'); }
         return { executionValidated: true, tool: RELAY_ANTHROPIC_TOOL, routeId: '0x' + 'a'.repeat(64) } as never;
       },
       async status(value) {
         tracked = true;
-        assert.deepEqual(value, { requestId: '0x' + 'a'.repeat(64), transactionId: '0x' + 'b'.repeat(64),
+        assert.deepEqual(value, { sourceChainId: '42161', requestId: '0x' + 'a'.repeat(64), transactionId: '0x' + 'b'.repeat(64),
           recipientAddress: WALLET, destinationMint: RELAY_ANTHROPIC_MINT, minimumReceivedBaseUnits: '950000' });
         return { state: 'DONE', receivedBaseUnits: '960000', message: null, destinationTransactionId: signature };
       },
@@ -100,9 +101,32 @@ test('only pinned Arbitrum assets to Anthropic Solana delegate to validated Rela
   assert.equal(tracked, true);
   const eth = await router.quote({ ...input, source: paymentAssetDefinition('ARBITRUM:ETH')!, amountBaseUnits: '500000000000000' });
   assert.equal(eth.executionValidated, true);
+  const ethereumEth = await router.quote({ ...input, source: paymentAssetDefinition('ETHEREUM:ETH')!, amountBaseUnits: '500000000000000' });
+  assert.equal(ethereumEth.executionValidated, true);
   await assert.rejects(router.status({ tool: RELAY_ANTHROPIC_TOOL, routeId: '0x' + 'a'.repeat(64),
     transactionId: '0x' + 'b'.repeat(64), fromChainId: '42161', toChainId: CHAIN,
     destinationAddress: USDC, recipientAddress: WALLET, minimumReceivedBaseUnits: '950000' }),
+    error => error instanceof LiFiError && error.code === 'unsafe_router_response');
+});
+
+test('Ethereum Relay status remains bound to mainnet and the pinned Anthropic recipient', async () => {
+  const router = new JupiterPurchaseRouter(rpc(null), { async quote() { assert.fail(); } }, fallback(),
+    async () => { assert.fail(); }, () => NOW, {
+      async quote() { assert.fail(); },
+      async status(value) {
+        assert.deepEqual(value, { sourceChainId: '1', requestId: '0x' + 'a'.repeat(64),
+          transactionId: '0x' + 'b'.repeat(64), recipientAddress: WALLET,
+          destinationMint: RELAY_ANTHROPIC_MINT, minimumReceivedBaseUnits: '950000' });
+        return { state: 'DONE', receivedBaseUnits: '960000', message: null, destinationTransactionId: signature };
+      },
+    });
+  const request: PurchaseRouteStatusRequest = { tool: RELAY_ANTHROPIC_TOOL, routeId: '0x' + 'a'.repeat(64),
+    transactionId: '0x' + 'b'.repeat(64), fromChainId: '1', toChainId: CHAIN,
+    destinationAddress: RELAY_ANTHROPIC_MINT, recipientAddress: WALLET, minimumReceivedBaseUnits: '950000' };
+  assert.equal((await router.status(request)).destinationTransactionId, signature);
+  await assert.rejects(router.status({ ...request, fromChainId: '8453' }),
+    error => error instanceof LiFiError && error.code === 'unsafe_router_response');
+  await assert.rejects(router.status({ ...request, destinationAddress: USDC }),
     error => error instanceof LiFiError && error.code === 'unsafe_router_response');
 });
 

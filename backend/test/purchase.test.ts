@@ -14,7 +14,7 @@ import type { PrivyPrincipal } from '../src/privy-auth.js';
 import { WalletAuthenticationError } from '../src/privy-auth.js';
 import type { Catalog, Stock } from '../src/schema.js';
 import { encodeBase58 } from '../src/transfer.js';
-import { RELAY_ANTHROPIC_TOOL } from '../src/relay.js';
+import { RELAY_ANTHROPIC_MINT, RELAY_ANTHROPIC_TOOL } from '../src/relay.js';
 
 const NOW = Date.parse('2026-09-22T12:00:00.000Z');
 const PRINCIPAL: PrivyPrincipal = { subject: 'did:privy:purchase-user', sessionId: 'session-one' };
@@ -154,6 +154,22 @@ test('unknown USD values fall back through funded USDC, funded asset, then enabl
     'without any funded asset the deterministic enabled asset wins');
 });
 
+test('unfunded Anthropic buy defaults to ETH on Ethereum mainnet', async () => {
+  const listing: Stock = { ...stock(), id: `prestocks:${RELAY_ANTHROPIC_MINT}`,
+    provider: 'prestocks', providerLabel: 'PreStocks · Pre-IPO', providerAssetId: RELAY_ANTHROPIC_MINT,
+    symbol: 'ANTHROPIC', deployments: [{ network: 'Solana', address: RELAY_ANTHROPIC_MINT,
+      decimals: null, depositEnabled: null, withdrawEnabled: null }] };
+  const chains = new Chains();
+  for (const asset of PAYMENT_ASSETS) {
+    chains.balances.set(asset.id, '0');
+    chains.usdValues.set(asset.id, null);
+  }
+  const service = new PurchaseService(async () => catalog([listing]), chains, new Router(),
+    new PurchaseLedger(null, () => NOW), () => NOW, true);
+  const options = await service.options(PRINCIPAL, { schemaVersion: 1, stockId: listing.id, wallets });
+  assert.equal(options.defaultPaymentAssetId, 'ETHEREUM:ETH');
+});
+
 test('native exact-input quote binds the portfolio-indexed destination, commits durably and only advances after route completion', async () => {
   const chains = new Chains(); const router = new Router(); const ledger = new PurchaseLedger(null, () => NOW);
   const service = new PurchaseService(async () => catalog(), chains, router, ledger, () => NOW, true);
@@ -172,32 +188,36 @@ test('native exact-input quote binds the portfolio-indexed destination, commits 
   assert.equal(completed.state, 'COMPLETED'); assert.equal(completed.step, 1); assert.equal(completed.receivedAmount, '0.5');
 });
 
-test('native Arbitrum Relay purchase has one wallet action and preserves its verified four-minute review window', async () => {
+test('native Ethereum and Arbitrum Relay purchases use the source chain and one wallet action', async () => {
   const mint = 'Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw';
   const listing: Stock = { ...stock(), id: `prestocks:${mint}`, provider: 'prestocks', providerLabel: 'PreStocks · Pre-IPO',
     providerAssetId: mint, symbol: 'ANTHROPIC',
     deployments: [{ network: 'Solana', address: mint, decimals: null, depositEnabled: null, withdrawEnabled: null }] };
-  const route: PurchaseRouter = { async quote(request) {
-    assert.equal(request.source.id, 'ARBITRUM:ETH');
-    assert.equal(request.destination.address, mint);
-    return { routeId: '0x' + 'a'.repeat(64), tool: RELAY_ANTHROPIC_TOOL, executionValidated: true,
-      expiresAt: new Date(NOW + 240_000).toISOString(), sourceChainId: '42161', destinationChainId: '1151111081099710',
-      fromTokenAddress: EVM_NATIVE, toTokenAddress: mint, fromAddress: EVM, toAddress: SOL,
-      fromAmount: request.amountBaseUnits, toAmount: '100000000', toAmountMin: '99500000', toDecimals: 8,
-      fromAmountUsd: '1.35', toAmountUsd: '1.05', feesUsd: '0.27', priceImpactPercent: null,
-      sourceGasBaseUnits: '10000000000000', approvalAddress: null,
-      transaction: { kind: 'EVM', from: EVM, to: '0x3333333333333333333333333333333333333333', data: '0x12',
-        value: '0x1c6bf52634000', gas: '0x30d40', gasPrice: '0x3b9aca00', maxFeePerGas: null,
-        maxPriorityFeePerGas: null, nonce: null } };
-  }, async status() { return { state: 'PENDING', receivedBaseUnits: null, message: null }; } };
-  const service = new PurchaseService(async () => catalog([listing]), new Chains(), route,
-    new PurchaseLedger(null, () => NOW), () => NOW, true);
-  const quote = await service.quote(PRINCIPAL, { ...quoteRequest('ARBITRUM:ETH'), stockId: listing.id,
-    amountBaseUnits: '500000000000000' });
-  assert.equal(quote.executionEnabled, true);
-  assert.equal(quote.walletConfirmations, 1);
-  assert.deepEqual(quote.actions.map(action => action.type), ['EVM_ROUTE']);
-  assert.equal(quote.expiresAt, new Date(NOW + 240_000).toISOString());
+  for (const sourceId of ['ARBITRUM:ETH', 'ETHEREUM:ETH'] as const) {
+    const sourceChainId = sourceId === 'ETHEREUM:ETH' ? '1' : '42161';
+    const route: PurchaseRouter = { async quote(request) {
+      assert.equal(request.source.id, sourceId);
+      assert.equal(request.destination.address, mint);
+      return { routeId: '0x' + 'a'.repeat(64), tool: RELAY_ANTHROPIC_TOOL, executionValidated: true,
+        expiresAt: new Date(NOW + 240_000).toISOString(), sourceChainId, destinationChainId: '1151111081099710',
+        fromTokenAddress: EVM_NATIVE, toTokenAddress: mint, fromAddress: EVM, toAddress: SOL,
+        fromAmount: request.amountBaseUnits, toAmount: '100000000', toAmountMin: '99500000', toDecimals: 8,
+        fromAmountUsd: '1.35', toAmountUsd: '1.05', feesUsd: '0.27', priceImpactPercent: null,
+        sourceGasBaseUnits: '10000000000000', approvalAddress: null,
+        transaction: { kind: 'EVM', from: EVM, to: '0x3333333333333333333333333333333333333333', data: '0x12',
+          value: '0x1c6bf52634000', gas: '0x30d40', gasPrice: '0x3b9aca00', maxFeePerGas: null,
+          maxPriorityFeePerGas: null, nonce: null } };
+    }, async status() { return { state: 'PENDING', receivedBaseUnits: null, message: null }; } };
+    const service = new PurchaseService(async () => catalog([listing]), new Chains(), route,
+      new PurchaseLedger(null, () => NOW), () => NOW, true);
+    const quote = await service.quote(PRINCIPAL, { ...quoteRequest(sourceId), stockId: listing.id,
+      amountBaseUnits: '500000000000000' });
+    assert.equal(quote.executionEnabled, true);
+    assert.equal(quote.walletConfirmations, 1);
+    assert.deepEqual(quote.actions.map(action => action.type), ['EVM_ROUTE']);
+    assert.equal(quote.actions[0]?.chainId, sourceChainId);
+    assert.equal(quote.expiresAt, new Date(NOW + 240_000).toISOString());
+  }
 });
 
 test('ERC-20 route grants only the reviewed amount and blocks route signing until approval receipt and allowance are confirmed', async () => {

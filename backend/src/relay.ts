@@ -8,6 +8,7 @@ import { publicPurchaseRpc, type JsonRpc } from './purchase-chain.js';
 import { MAINNET_GENESIS } from './portfolio-upstream.js';
 
 const ORIGIN = 'https://api.relay.link';
+const ETHEREUM = 1;
 const ARBITRUM = 42161;
 const SOLANA_RELAY = 792703809;
 const SOLANA_ELEVEN = '1151111081099710';
@@ -20,7 +21,7 @@ const SOLANA_PYUSD = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo';
 const DEPOSITORY = '0x4cd00e387622c35bddb9b4c962c136462338bc31';
 const SOLVER = '0xf70da97812cb96acdf810712aa562db8dfa3dbef';
 export const RELAY_ANTHROPIC_TOOL = 'eleven-relay-anthropic';
-const VM_TYPES = { arbitrum: 'ethereum-vm', base: 'ethereum-vm', solana: 'solana-vm' } as const;
+const VM_TYPES = { ethereum: 'ethereum-vm', arbitrum: 'ethereum-vm', base: 'ethereum-vm', solana: 'solana-vm' } as const;
 const MAX_INPUT = 10_000_000n;
 const MAX_ETH_INPUT = 3_000_000_000_000_000n;
 const MAX_GAS = 1_000_000n;
@@ -50,11 +51,11 @@ const Quote = z.object({
     paymentDetails: z.object({ chainId: z.string(), depository: EvmAddress,
       currency: EvmAddress, amount: UInt }).passthrough() }).passthrough() }).passthrough(),
 }).passthrough();
-const Refund = z.object({ chainId: z.enum(['arbitrum', 'solana']), recipient: z.string(),
+const Refund = z.object({ chainId: z.enum(['ethereum', 'arbitrum', 'solana']), recipient: z.string(),
   currency: z.string(), minimumAmount: UInt, deadline: z.number().int().safe(), extraData: HexData }).strict();
 const OrderData = z.object({
   version: z.literal('v1'), solverChainId: z.literal('base'), solver: EvmAddress, salt: Hash,
-  inputs: z.array(z.object({ payment: z.object({ chainId: z.literal('arbitrum'), currency: EvmAddress,
+  inputs: z.array(z.object({ payment: z.object({ chainId: z.enum(['ethereum', 'arbitrum']), currency: EvmAddress,
     amount: UInt, weight: z.literal('1') }).strict(), refunds: z.array(Refund).min(1).max(2) }).strict()).length(1),
   output: z.object({ chainId: z.literal('solana'),
     payments: z.array(z.object({ recipient: SolAddress, currency: SolAddress,
@@ -63,7 +64,7 @@ const OrderData = z.object({
   fees: z.array(z.unknown()).length(0),
 }).strict();
 const TxData = z.object({ from: EvmAddress, to: EvmAddress,
-  chainId: z.union([z.literal(ARBITRUM), z.literal(String(ARBITRUM))]), data: HexData,
+  chainId: z.union([z.literal(ETHEREUM), z.literal(String(ETHEREUM)), z.literal(ARBITRUM), z.literal(String(ARBITRUM))]), data: HexData,
   value: UInt, gas: Positive, gasPrice: UInt.optional(), maxFeePerGas: UInt.optional(),
   maxPriorityFeePerGas: UInt.optional(), nonce: UInt.optional() }).strict();
 const DEPOSIT_ABI = parseAbi(['function depositErc20(address depositor, address token, uint256 amount, bytes32 id)']);
@@ -117,7 +118,7 @@ async function json(response: Response): Promise<unknown> {
 }
 
 export interface RelayQuoteRequest {
-  sourceAssetId?: 'ARBITRUM:USDC' | 'ARBITRUM:ETH';
+  sourceAssetId?: 'ARBITRUM:USDC' | 'ARBITRUM:ETH' | 'ETHEREUM:ETH';
   fromAddress: string;
   recipientAddress: string;
   amountBaseUnits: string;
@@ -129,6 +130,7 @@ export type RelayQuote = LiFiRouteQuote & {
   transaction: LiFiEvmTransaction;
 };
 export interface RelayStatusRequest {
+  sourceChainId: '1' | '42161';
   requestId: string;
   transactionId: string;
   recipientAddress: string;
@@ -141,7 +143,7 @@ async function recoverSolver(orderId: Hex, signature: Hex): Promise<string> {
   return recoverMessageAddress({ message: { raw: hexToBytes(orderId) }, signature });
 }
 
-/** Exact Arbitrum USDC or native ETH to the pinned Anthropic PreStocks Solana mint. */
+/** Exact Arbitrum USDC/native ETH or Ethereum native ETH to the pinned Anthropic PreStocks Solana mint. */
 export class RelayClient {
   constructor(private readonly fetcher: typeof fetch = fetch, private readonly rpc: JsonRpc = publicPurchaseRpc(),
     private readonly now: () => number = Date.now, private readonly apiKey = process.env.RELAY_API_KEY,
@@ -149,8 +151,10 @@ export class RelayClient {
 
   async quote(request: RelayQuoteRequest): Promise<RelayQuote> {
     const sourceAssetId = request.sourceAssetId ?? 'ARBITRUM:USDC';
-    if (sourceAssetId !== 'ARBITRUM:USDC' && sourceAssetId !== 'ARBITRUM:ETH') return unsafe();
-    const native = sourceAssetId === 'ARBITRUM:ETH';
+    if (sourceAssetId !== 'ARBITRUM:USDC' && sourceAssetId !== 'ARBITRUM:ETH' && sourceAssetId !== 'ETHEREUM:ETH') return unsafe();
+    const sourceChainId = sourceAssetId === 'ETHEREUM:ETH' ? ETHEREUM : ARBITRUM;
+    const sourceChain = sourceChainId === ETHEREUM ? 'ethereum' : 'arbitrum';
+    const native = sourceAssetId !== 'ARBITRUM:USDC';
     const sourceCurrency = native ? ETH : USDC;
     const sourceDecimals = native ? 18 : 6;
     const from = checked(EvmAddress, request.fromAddress);
@@ -160,7 +164,7 @@ export class RelayClient {
     if (BigInt(amount) > (native ? MAX_ETH_INPUT : MAX_INPUT) || !Number.isInteger(request.slippageBps) ||
       request.slippageBps < 1 || request.slippageBps > 1_000) return unavailable('This route supports up to $10 of source asset and reviewed slippage up to 10%.');
     const url = new URL('/quote/v2', ORIGIN);
-    const body = { user: from, recipient, originChainId: ARBITRUM, destinationChainId: SOLANA_RELAY,
+    const body = { user: from, recipient, originChainId: sourceChainId, destinationChainId: SOLANA_RELAY,
       originCurrency: sourceCurrency, destinationCurrency: RELAY_ANTHROPIC_MINT, amount, tradeType: 'EXACT_INPUT',
       slippageTolerance: String(request.slippageBps), usePermit: false, includeProtocolData: true, ttl: 300 };
     let raw: unknown;
@@ -177,7 +181,7 @@ export class RelayClient {
     const input = quote.details.currencyIn;
     const output = quote.details.currencyOut;
     if (!sameEvm(quote.details.sender, from) || quote.details.recipient !== recipient ||
-      input.currency.chainId !== ARBITRUM || !sameEvm(input.currency.address, sourceCurrency) ||
+      input.currency.chainId !== sourceChainId || !sameEvm(input.currency.address, sourceCurrency) ||
       input.currency.decimals !== sourceDecimals || input.amount !== amount || BigInt(input.minimumAmount) > BigInt(amount) ||
       output.currency.chainId !== SOLANA_RELAY || output.currency.address !== RELAY_ANTHROPIC_MINT ||
       output.currency.decimals !== 9) return unsafe();
@@ -196,19 +200,19 @@ export class RelayClient {
     const outputPayment = order.output.payments[0]!;
     const nowSeconds = Math.floor(this.now() / 1_000);
     if (!sameEvm(order.solver, SOLVER) ||
-      !sameEvm(payment.currency, sourceCurrency) || payment.amount !== amount ||
+      payment.chainId !== sourceChain || !sameEvm(payment.currency, sourceCurrency) || payment.amount !== amount ||
       outputPayment.recipient !== recipient || outputPayment.currency !== RELAY_ANTHROPIC_MINT ||
       outputPayment.expectedAmount !== output.amount || outputPayment.minimumAmount !== output.minimumAmount ||
       order.output.deadline <= nowSeconds || order.output.deadline > nowSeconds + 8 * 86_400 ||
       order.inputs[0]!.refunds.length !== 2 ||
-      order.inputs[0]!.refunds.filter(refund => refund.chainId === 'arbitrum').length !== 1 ||
+      order.inputs[0]!.refunds.filter(refund => refund.chainId === sourceChain).length !== 1 ||
       order.inputs[0]!.refunds.filter(refund => refund.chainId === 'solana').length !== 1 ||
       order.inputs[0]!.refunds.some(refund =>
         refund.deadline <= nowSeconds || refund.deadline > nowSeconds + 8 * 86_400 ||
-        (refund.chainId === 'arbitrum' && (!sameEvm(refund.recipient, from) || !sameEvm(refund.currency, sourceCurrency))) ||
+        (refund.chainId === sourceChain && (!sameEvm(refund.recipient, from) || !sameEvm(refund.currency, sourceCurrency))) ||
         (refund.chainId === 'solana' && (refund.recipient !== recipient ||
           ![SOLANA_USDC, SOLANA_PYUSD].includes(refund.currency)))) ||
-      protocol.paymentDetails.chainId !== 'arbitrum' ||
+      protocol.paymentDetails.chainId !== sourceChain ||
       !sameEvm(protocol.paymentDetails.depository, DEPOSITORY) ||
       !sameEvm(protocol.paymentDetails.currency, sourceCurrency) || protocol.paymentDetails.amount !== amount) return unsafe();
     let orderId: string;
@@ -232,7 +236,7 @@ export class RelayClient {
     const check = depositStep.items[0]!.check;
     if (!check || check.method !== 'GET' ||
       check.endpoint !== '/intents/status/v3?requestId=' + quote.requestId) return unsafe();
-    const transaction = this.evmTransaction(depositStep.items[0]!.data, from);
+    const transaction = this.evmTransaction(depositStep.items[0]!.data, from, sourceChainId);
     if (!sameEvm(transaction.to, DEPOSITORY) ||
       BigInt(transaction.value) !== (native ? BigInt(amount) : 0n)) return unsafe();
     try {
@@ -260,7 +264,7 @@ export class RelayClient {
     }
     if (!native && ids.length === 2) {
       if (quote.steps[0]!.items[0]!.check !== undefined) return unsafe();
-      const approval = this.evmTransaction(quote.steps[0]!.items[0]!.data, from);
+      const approval = this.evmTransaction(quote.steps[0]!.items[0]!.data, from, sourceChainId);
       if (!sameEvm(approval.to, USDC) || BigInt(approval.value) !== 0n) return unsafe();
       try {
         const decoded = decodeFunctionData({ abi: APPROVAL_ABI, data: approval.data as Hex });
@@ -278,10 +282,10 @@ export class RelayClient {
     const gas = quote.fees.gas;
     const relayer = quote.fees.relayer;
     const app = quote.fees.app;
-    if (gas.currency.chainId !== ARBITRUM ||
+    if (gas.currency.chainId !== sourceChainId ||
       !sameEvm(gas.currency.address, ETH) ||
       gas.currency.decimals !== 18 || BigInt(gas.amount) <= 0n || BigInt(gas.amount) > MAX_GAS_WEI ||
-      relayer.currency.chainId !== ARBITRUM || !sameEvm(relayer.currency.address, sourceCurrency) ||
+      relayer.currency.chainId !== sourceChainId || !sameEvm(relayer.currency.address, sourceCurrency) ||
       relayer.currency.decimals !== sourceDecimals || (app !== undefined && BigInt(app.amount) !== 0n)) {
       return unsafe('Relay fees do not match the supported source asset.');
     }
@@ -293,7 +297,7 @@ export class RelayClient {
     }
     return {
       requestId: quote.requestId, routeId: quote.requestId, tool: RELAY_ANTHROPIC_TOOL, executionValidated: true,
-      sourceChainId: String(ARBITRUM), destinationChainId: SOLANA_ELEVEN,
+      sourceChainId: String(sourceChainId), destinationChainId: SOLANA_ELEVEN,
       fromTokenAddress: sourceCurrency, toTokenAddress: RELAY_ANTHROPIC_MINT, fromAddress: from, toAddress: recipient,
       fromAmount: amount, toAmount: output.amount, toAmountMin: output.minimumAmount, toDecimals: 9,
       fromAmountUsd: input.amountUsd ?? null, toAmountUsd: output.amountUsd ?? null, feesUsd: feesUsd.toFixed(),
@@ -302,11 +306,11 @@ export class RelayClient {
     };
   }
 
-  private evmTransaction(raw: unknown, from: string): LiFiEvmTransaction {
+  private evmTransaction(raw: unknown, from: string, sourceChainId: number): LiFiEvmTransaction {
     const data = checked(TxData, raw);
     const gas = BigInt(data.gas);
     const fee = data.gasPrice === undefined ? data.maxFeePerGas : data.gasPrice;
-    if (!sameEvm(data.from, from) || Number(data.chainId) !== ARBITRUM ||
+    if (!sameEvm(data.from, from) || Number(data.chainId) !== sourceChainId ||
       gas < 21_000n || gas > MAX_GAS || fee === undefined || BigInt(fee) <= 0n ||
       (data.gasPrice === undefined && data.maxPriorityFeePerGas === undefined) ||
       (data.gasPrice !== undefined && (data.maxFeePerGas !== undefined || data.maxPriorityFeePerGas !== undefined)) ||
@@ -321,6 +325,9 @@ export class RelayClient {
   }
 
   async status(request: RelayStatusRequest): Promise<RelayStatus> {
+    const sourceChainId = request.sourceChainId === '1' ? ETHEREUM :
+      request.sourceChainId === '42161' ? ARBITRUM : unsafe();
+    const sourceNetwork = sourceChainId === ETHEREUM ? 'ETHEREUM' : 'ARBITRUM';
     const requestId = checked(Hash, request.requestId);
     const transactionId = checked(Hash, request.transactionId);
     const recipient = checked(SolAddress, request.recipientAddress);
@@ -341,7 +348,7 @@ export class RelayClient {
       'success', 'refund', 'failure']), inTxHashes: z.array(Hash).max(16).optional(),
       txHashes: z.array(z.string()).max(8).optional(),
       originChainId: z.number().int().optional(), destinationChainId: z.number().int().optional() }).passthrough(), raw);
-    if ((result.originChainId !== undefined && result.originChainId !== ARBITRUM) ||
+    if ((result.originChainId !== undefined && result.originChainId !== sourceChainId) ||
       (result.destinationChainId !== undefined && result.destinationChainId !== SOLANA_RELAY) ||
       (result.inTxHashes !== undefined && result.inTxHashes.length > 0 &&
         !result.inTxHashes.some(hash => hash.toLowerCase() === transactionId.toLowerCase()))) return unsafe();
@@ -353,11 +360,11 @@ export class RelayClient {
     const pending: RelayStatus = { state: 'PENDING', receivedBaseUnits: null, destinationTransactionId: null, message: null };
     let receipt: unknown;
     try {
-      const chainId = await this.rpc.call('ARBITRUM', 'eth_chainId', []);
-      if (typeof chainId !== 'string' || !/^0x[0-9a-fA-F]+$/.test(chainId) || BigInt(chainId) !== BigInt(ARBITRUM)) {
-        return unsafe('Arbitrum RPC is on the wrong chain.');
+      const chainId = await this.rpc.call(sourceNetwork, 'eth_chainId', []);
+      if (typeof chainId !== 'string' || !/^0x[0-9a-fA-F]+$/.test(chainId) || BigInt(chainId) !== BigInt(sourceChainId)) {
+        return unsafe('Source RPC is on the wrong chain.');
       }
-      receipt = await this.rpc.call('ARBITRUM', 'eth_getTransactionReceipt', [transactionId]);
+      receipt = await this.rpc.call(sourceNetwork, 'eth_getTransactionReceipt', [transactionId]);
     } catch (error) {
       if (error instanceof LiFiError) throw error;
       return pending;
@@ -367,7 +374,7 @@ export class RelayClient {
         status: z.string().regex(/^0x[0-9a-fA-F]+$/) }).passthrough(), receipt);
       if (verified.transactionHash.toLowerCase() !== transactionId.toLowerCase()) return unsafe();
       if (BigInt(verified.status) === 0n) return { state: 'FAILED', receivedBaseUnits: null,
-        destinationTransactionId: null, message: 'The Arbitrum deposit transaction reverted.' };
+        destinationTransactionId: null, message: 'The source deposit transaction reverted.' };
       if (BigInt(verified.status) !== 1n) return unsafe();
     }
     if (result.status !== 'success' || receipt === null) return pending;

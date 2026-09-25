@@ -8,6 +8,7 @@ import { SolanaSwapValidationError, validateSolanaSwap, type SolanaSwapRpc, type
 
 const SOL_CHAIN = '1151111081099710';
 const WSOL = 'So11111111111111111111111111111111111111112';
+const ETHEREUM_CHAIN = '1';
 const ARBITRUM_CHAIN = '42161';
 export const JUPITER_PURCHASE_TOOL = 'eleven-jupiter-metis';
 type OrderClient = Pick<JupiterSwapV2, 'quote'>;
@@ -54,15 +55,16 @@ function tokenReceipt(meta: Record<string, unknown>, mint: string, recipient: st
 }
 
 /** Only independently validated same-chain swaps and pinned Relay
- * Arbitrum/Anthropic routes can execute. This class never signs or broadcasts. */
+ * Ethereum or Arbitrum to Anthropic routes can execute. This class never signs or broadcasts. */
 export class JupiterPurchaseRouter implements PurchaseRouter {
   constructor(private readonly rpc: JsonRpc = publicPurchaseRpc(), private readonly orders: OrderClient = new JupiterSwapV2(),
     private readonly fallback: PurchaseRouter = new LiFiClient(), private readonly validate: Validator = validateSolanaSwap,
     private readonly now: () => number = Date.now, private readonly relay: Pick<RelayClient, 'quote' | 'status'> = new RelayClient()) {}
 
   async quote(request: LiFiQuoteRequest): Promise<LiFiRouteQuote> {
-    if ((request.source.id === 'ARBITRUM:USDC' || request.source.id === 'ARBITRUM:ETH') &&
-      request.source.chainId === ARBITRUM_CHAIN &&
+    if ((((request.source.id === 'ARBITRUM:USDC' || request.source.id === 'ARBITRUM:ETH') &&
+        request.source.chainId === ARBITRUM_CHAIN) ||
+      (request.source.id === 'ETHEREUM:ETH' && request.source.chainId === ETHEREUM_CHAIN)) &&
       request.destination.network === 'SOLANA' && request.destination.chainId === SOL_CHAIN &&
       request.destination.address === RELAY_ANTHROPIC_MINT) {
       return this.relay.quote({ sourceAssetId: request.source.id, fromAddress: request.fromAddress, recipientAddress: request.toAddress,
@@ -111,12 +113,13 @@ export class JupiterPurchaseRouter implements PurchaseRouter {
 
   async status(request: PurchaseRouteStatusRequest): Promise<LiFiExecutionStatus> {
     if (request.tool === RELAY_ANTHROPIC_TOOL) {
-      if (request.fromChainId !== ARBITRUM_CHAIN || request.toChainId !== SOL_CHAIN ||
+      if (![ETHEREUM_CHAIN, ARBITRUM_CHAIN].includes(request.fromChainId) || request.toChainId !== SOL_CHAIN ||
         request.destinationAddress !== RELAY_ANTHROPIC_MINT || !request.routeId ||
         !request.recipientAddress || !request.minimumReceivedBaseUnits) {
         return unsafe('The Relay status request does not match the reviewed Anthropic route.');
       }
-      return this.relay.status({ requestId: request.routeId, transactionId: request.transactionId,
+      return this.relay.status({ sourceChainId: request.fromChainId as '1' | '42161',
+        requestId: request.routeId, transactionId: request.transactionId,
         recipientAddress: request.recipientAddress, destinationMint: request.destinationAddress,
         minimumReceivedBaseUnits: request.minimumReceivedBaseUnits });
     }

@@ -25,7 +25,7 @@ const SIG = encodeBase58(Buffer.alloc(64, 7));
 const LIVE_ORDER_ID = '0xa45cd093166bb92f6c3398a8ae1ed453b4ae4d7f82b5347f98297d7123a8ed27';
 const LIVE_ORDER_SIGNATURE = '0x71ba981e85913f7bae4c20d8fb61a34f78803a368536586c9644fa7f67854ec7401e3dffa01bbbe066caf888faab0cd7c69b69f215d12a3feb8879fb154b892e1c';
 const MINIMUM = '9950000';
-const VM = { arbitrum: 'ethereum-vm', base: 'ethereum-vm', solana: 'solana-vm' } as const;
+const VM = { ethereum: 'ethereum-vm', arbitrum: 'ethereum-vm', base: 'ethereum-vm', solana: 'solana-vm' } as const;
 const DEPOSIT_ABI = parseAbi(['function depositErc20(address depositor, address token, uint256 amount, bytes32 id)']);
 const DEPOSIT_NATIVE_ABI = parseAbi(['function depositNative(address depositor, bytes32 id)']);
 const APPROVAL_ABI = parseAbi(['function approve(address spender, uint256 amount)']);
@@ -121,6 +121,23 @@ function nativeQuoteBody() {
   body.steps = [body.steps[1]!];
   body.steps[0]!.items[0]!.data.value = ETH_AMOUNT;
   body.steps[0]!.items[0]!.data.gas = '33911';
+  rebindDeposit(body, true);
+  return body;
+}
+
+function ethereumQuoteBody() {
+  const body = nativeQuoteBody();
+  body.protocol.v2.orderData.inputs[0]!.payment.chainId = 'ethereum';
+  body.protocol.v2.orderData.inputs[0]!.refunds[0]!.chainId = 'ethereum';
+  body.protocol.v2.orderData.inputs[0]!.refunds[0]!.extraData = '0x' + '0'.repeat(64);
+  body.protocol.v2.paymentDetails.chainId = 'ethereum';
+  body.details.currencyIn.currency.chainId = 1;
+  body.fees.gas.currency.chainId = 1;
+  body.fees.relayer.currency.chainId = 1;
+  body.fees.app.currency.chainId = 1;
+  body.steps[0]!.items[0]!.data.chainId = 1;
+  body.steps[0]!.items[0]!.data.maxFeePerGas = '2000000000';
+  body.steps[0]!.items[0]!.data.maxPriorityFeePerGas = '1000000000';
   rebindDeposit(body, true);
   return body;
 }
@@ -280,6 +297,42 @@ test('Relay rejects native ETH value, calldata, refund, fee and source substitut
     error => error instanceof LiFiError && error.code === 'route_unavailable');
 });
 
+test('Relay validates native Ethereum ETH to the pinned Anthropic mint as one mainnet deposit', async () => {
+  const body = ethereumQuoteBody();
+  const relay = new RelayClient(fetcher(body, (_url, init) => {
+    const sent = JSON.parse(String(init?.body));
+    assert.equal(sent.originChainId, 1);
+    assert.equal(sent.originCurrency, ETH);
+    assert.equal(sent.destinationChainId, 792703809);
+    assert.equal(sent.destinationCurrency, RELAY_ANTHROPIC_MINT);
+  }), undefined, () => NOW, undefined, recoverTestSigner);
+  const quote = await relay.quote({ ...request, sourceAssetId: 'ETHEREUM:ETH', amountBaseUnits: ETH_AMOUNT });
+  assert.equal(quote.sourceChainId, '1');
+  assert.equal(quote.executionValidated, true);
+  assert.equal(quote.approvalAddress, null);
+  assert.equal(quote.transaction.to, DEPOSITORY);
+  assert.equal(quote.transaction.value, '0x1c6bf52634000');
+});
+
+test('Relay rejects Ethereum quote source-chain and refund substitutions', async () => {
+  const ethereumRequest = { ...request, sourceAssetId: 'ETHEREUM:ETH' as const, amountBaseUnits: ETH_AMOUNT };
+  const cases: Array<(body: ReturnType<typeof ethereumQuoteBody>) => void> = [
+    q => { q.details.currencyIn.currency.chainId = 42161; },
+    q => { q.steps[0]!.items[0]!.data.chainId = 42161; },
+    q => { q.protocol.v2.orderData.inputs[0]!.payment.chainId = 'arbitrum'; rebindDeposit(q, true); },
+    q => { q.protocol.v2.orderData.inputs[0]!.refunds[0]!.chainId = 'arbitrum'; rebindDeposit(q, true); },
+    q => { q.protocol.v2.orderData.inputs[0]!.refunds[0]!.recipient = DEPOSITORY; rebindDeposit(q, true); },
+    q => { q.protocol.v2.paymentDetails.chainId = 'arbitrum'; },
+    q => { q.steps[0]!.items[0]!.data.to = USER; },
+    q => { q.fees.gas.currency.chainId = 42161; },
+    q => { q.fees.relayer.currency.chainId = 42161; },
+  ];
+  for (const mutate of cases) {
+    const body = ethereumQuoteBody(); mutate(body);
+    await assert.rejects(client(body).quote(ethereumRequest), isUnsafe);
+  }
+});
+
 function statusBody(status: string) {
   return { status, inTxHashes: [TX_HASH], txHashes: [SIG],
     originChainId: 42161, destinationChainId: 792703809 };
@@ -307,8 +360,21 @@ function rpc(destination: unknown = destinationTx(), receipt: unknown = { transa
     assert.fail('Unexpected RPC read');
   } };
 }
+function ethereumRpc(destination: unknown = destinationTx(), receipt: unknown = { transactionHash: TX_HASH, status: '0x1' }): JsonRpc {
+  return { async call(network, method, params) {
+    if (network === 'ETHEREUM' && method === 'eth_chainId') return '0x1';
+    if (network === 'ETHEREUM' && method === 'eth_getTransactionReceipt') {
+      assert.deepEqual(params, [TX_HASH]); return receipt;
+    }
+    if (network === 'SOLANA' && method === 'getGenesisHash') return MAINNET_GENESIS;
+    if (network === 'SOLANA' && method === 'getTransaction') {
+      assert.equal(params[0], SIG); return destination;
+    }
+    assert.fail('Unexpected RPC read');
+  } };
+}
 const statusRequest = { requestId: REQUEST_ID, transactionId: TX_HASH, recipientAddress: RECIPIENT,
-  destinationMint: RELAY_ANTHROPIC_MINT, minimumReceivedBaseUnits: MINIMUM };
+  sourceChainId: '42161' as const, destinationMint: RELAY_ANTHROPIC_MINT, minimumReceivedBaseUnits: MINIMUM };
 
 test('Relay status proves source receipt and exact recipient Anthropic token delta before DONE', async () => {
   const relay = new RelayClient(fetcher(statusBody('success'), (url, init) => {
@@ -320,6 +386,19 @@ test('Relay status proves source receipt and exact recipient Anthropic token del
   assert.deepEqual(await relay.status(statusRequest), {
     state: 'DONE', receivedBaseUnits: '9950000', destinationTransactionId: SIG, message: null,
   });
+});
+
+test('Relay status proves Ethereum mainnet receipt and rejects wrong source chain', async () => {
+  const ethereumStatus = { ...statusBody('success'), originChainId: 1 };
+  const ethereumRequest = { ...statusRequest, sourceChainId: '1' as const };
+  assert.equal((await new RelayClient(fetcher(ethereumStatus), ethereumRpc(), () => NOW)
+    .status(ethereumRequest)).state, 'DONE');
+  await assert.rejects(new RelayClient(fetcher(statusBody('success')), ethereumRpc(), () => NOW)
+    .status(ethereumRequest), isUnsafe);
+  await assert.rejects(new RelayClient(fetcher(ethereumStatus), { async call() { return '0xa4b1'; } }, () => NOW)
+    .status(ethereumRequest), isUnsafe);
+  await assert.rejects(new RelayClient(fetcher(ethereumStatus), ethereumRpc(), () => NOW)
+    .status({ ...ethereumRequest, sourceChainId: '8453' as '1' }), isUnsafe);
 });
 
 test('Relay status stays pending until both receipts exist and fails closed on refunds and reverts', async () => {

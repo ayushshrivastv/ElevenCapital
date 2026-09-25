@@ -42,8 +42,8 @@ android {
         versionCode = 42
         versionName = "0.18.21"
         buildConfigField("boolean", "LIVE_MARKET_DATA", marketDataUrl.isNotEmpty().toString())
-        // The server must independently validate each quoted Solana transaction.
-        // Cross-chain/EVM previews cannot pass the per-quote execution gate.
+        // The server independently validates executable routes, including the pinned
+        // Ethereum/Arbitrum-to-Anthropic Relay routes; other unverified routes remain preview-only.
         buildConfigField("boolean", "PURCHASE_EXECUTION_ENABLED", "true")
         buildConfigField("String", "MARKET_DATA_URL", "\"" + marketDataUrl.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
         buildConfigField("String", "PRIVY_APP_ID", buildConfigString(privyAppId))
@@ -70,6 +70,19 @@ kotlin {
         setSrcDirs(listOf(rootProject.projectDir))
         include("*.kt", "auth/*.kt", "data/*.kt", "purchase/*.kt", "screens/*.kt", "ui/*.kt", "wallet/*.kt")
     }
+}
+
+// Fixture data is for local layout tests, never an installable wallet application.
+val verifyLiveAppConfiguration by tasks.registering {
+    doLast {
+        check(marketDataUrl.isNotBlank()) {
+            "APK builds require -PmarketDataUrl=<backend URL>. " +
+                "For local device testing use -PmarketDataUrl=http://127.0.0.1:8787 and adb reverse tcp:8787 tcp:8787."
+        }
+    }
+}
+tasks.matching { it.name == "packageDebug" || it.name == "packageRelease" }.configureEach {
+    dependsOn(verifyLiveAppConfiguration)
 }
 
 dependencies {

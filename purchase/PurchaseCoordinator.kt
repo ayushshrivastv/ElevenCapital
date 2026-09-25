@@ -61,6 +61,7 @@ class PurchaseCoordinator internal constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val operationMutex = Mutex()
     private var operationJob: Job? = null
+    private var optionsRefreshJob: Job? = null
     private var boundUserId: String? = null
     private var boundWallets: List<UserWallet>? = null
     private var manuallySelectedPaymentAssetId: String? = null
@@ -104,7 +105,14 @@ class PurchaseCoordinator internal constructor(
         if (session != null || user.phase in setOf(AuthPhase.SIGNED_OUT, AuthPhase.UNCONFIGURED)) {
             useOptionsSession(session)
         }
+        // Closing or changing the order screen must not cancel a committed wallet action.
+        // The application-scoped coordinator continues tracking it for this authenticated user.
+        if (user.authenticated && user.userId == boundUserId && mutableState.value.phase in setOf(
+                PurchasePhase.COMMITTING, PurchasePhase.SIGNING, PurchasePhase.TRACKING,
+            )
+        ) return
         if (stockId == null || !stockId.isSafeStockId() || !user.authenticated || !user.walletsReady) {
+            optionsRefreshJob?.cancel()
             operationJob?.cancel()
             boundUserId = user.userId
             boundWallets = user.wallets.toList()
@@ -116,6 +124,7 @@ class PurchaseCoordinator internal constructor(
         }
         if (boundWallets == user.wallets && canReusePurchaseState(boundUserId, user.userId, mutableState.value.stockId, stockId,
                 mutableState.value.phase, mutableState.value.side, side)) return
+        optionsRefreshJob?.cancel()
         operationJob?.cancel()
         boundUserId = user.userId
         boundWallets = user.wallets.toList()
@@ -139,13 +148,17 @@ class PurchaseCoordinator internal constructor(
     fun refreshOptions() {
         val current = mutableState.value
         val user = auth.state.value
-        if (current.busy || !user.walletsReady || user.userId != boundUserId || current.stockId?.isSafeStockId() != true) return
+        if (current.phase !in setOf(PurchasePhase.ENTRY, PurchasePhase.FAILED, PurchasePhase.UNAVAILABLE) ||
+            current.busy || current.quote != null || current.status != null || current.ambiguousSubmission ||
+            !user.walletsReady || user.userId != boundUserId || current.stockId?.isSafeStockId() != true) return
         val side = current.side
-        operationJob?.cancel()
         val session = walletSession(user) ?: return
         val key = OptionsKey(session, requireNotNull(current.stockId), side)
         discardCachedOptions(key)
-        operationJob = scope.launch { loadOptions(session, key.stockId, side) }
+        // Keep idle balance reads separate from the quote/signing job. A Buy tap can reserve
+        // QUOTING concurrently; cancelling operationJob here would strand that purchase.
+        optionsRefreshJob?.cancel()
+        optionsRefreshJob = scope.launch { loadOptions(session, key.stockId, side) }
     }
 
     fun selectPaymentAsset(id: String) {
@@ -168,10 +181,21 @@ class PurchaseCoordinator internal constructor(
     }
 
     fun requestQuote(displayAmount: String, slippageBps: Int = DEFAULT_SLIPPAGE_BPS) {
+        requestQuoteInternal(displayAmount, slippageBps, executeBuy = false)
+    }
+
+    /** A Buy tap requests an exact quote and executes that same bound quote once, without a second app review step. */
+    fun requestAndExecuteBuy(displayAmount: String, slippageBps: Int = DEFAULT_SLIPPAGE_BPS) {
+        requestQuoteInternal(displayAmount, slippageBps, executeBuy = true)
+    }
+
+    private fun requestQuoteInternal(displayAmount: String, slippageBps: Int, executeBuy: Boolean) {
         val snapshot = mutableState.value
         val user = auth.state.value
         if (snapshot.phase !in setOf(PurchasePhase.ENTRY, PurchasePhase.FAILED) || snapshot.busy ||
-            !user.walletsReady || user.userId != boundUserId || snapshot.stockId == null) return
+            snapshot.ambiguousSubmission || !user.walletsReady || user.userId != boundUserId ||
+            snapshot.stockId == null || (executeBuy && snapshot.side != OrderSide.BUY)) return
+        val session = walletSession(user) ?: return
         val options = snapshot.options ?: return
         val asset = snapshot.selectedPaymentAsset ?: return
         val side = snapshot.side
@@ -183,31 +207,63 @@ class PurchaseCoordinator internal constructor(
                 message = "The selected wallet balance is not enough for this order.")
             return
         }
+        // Reserve the tap before launching IO. Another tap now sees QUOTING and cannot create
+        // another operation while the first request is waiting for the backend.
+        val quoting = reserveQuoteRequest(mutableState, snapshot) ?: return
+        optionsRefreshJob?.cancel()
         operationJob?.cancel()
         operationJob = scope.launch {
             operationMutex.withLock {
-                mutableState.value = snapshot.copy(phase = PurchasePhase.QUOTING, quote = null, status = null,
-                    message = "Finding the best verified route…", ambiguousSubmission = false)
+                if (mutableState.value !== quoting || !isCurrentOptionsBinding(session.userId, snapshot.stockId, side) ||
+                    walletSession(auth.state.value) != session) return@withLock
                 try {
-                    val quote = client.quote(PurchaseQuoteRequest(
+                    val request = PurchaseQuoteRequest(
                         operationId = UUID.randomUUID().toString().lowercase(Locale.ROOT),
-                        userId = requireNotNull(user.userId), stockId = snapshot.stockId,
+                        userId = session.userId, stockId = snapshot.stockId,
                         fromAssetId = asset.id, fromNetwork = asset.network, inputDecimals = asset.decimals,
                         destinationId = snapshot.selectedDestinationId,
                         amountBaseUnits = amount.baseUnits, slippageBps = slippageBps,
-                        wallets = user.wallets, destinations = options.destinations, side = side,
+                        wallets = session.wallets, destinations = options.destinations, side = side,
                         inputUiMultiplier = asset.uiMultiplier,
-                    ))
+                    )
+                    val quote = client.quote(request)
                     if (quote.executionEnabled && !options.executionEnabled) purchaseProtocolFailure()
-                    if (quote.binding.side != side || auth.state.value.userId != user.userId ||
-                        mutableState.value.stockId != snapshot.stockId || mutableState.value.side != side) return@withLock
-                    mutableState.value = snapshot.copy(phase = PurchasePhase.REVIEW, quote = quote, status = null,
-                        message = null, ambiguousSubmission = false)
+                    val binding = quote.binding
+                    if (binding.operationId != request.operationId || binding.userId != session.userId ||
+                        binding.stockId != snapshot.stockId || binding.side != side ||
+                        binding.fromAssetId != asset.id || binding.fromNetwork != asset.network ||
+                        binding.inputBaseUnits != amount.baseUnits || binding.inputDecimals != asset.decimals ||
+                        binding.inputUiMultiplier.compareTo(asset.uiMultiplier) != 0 ||
+                        binding.requestedDestinationId != snapshot.selectedDestinationId ||
+                        binding.slippageBps != slippageBps) purchaseProtocolFailure()
+                    if (mutableState.value !== quoting || !isCurrentOptionsBinding(session.userId, snapshot.stockId, side) ||
+                        walletSession(auth.state.value) != session) return@withLock
+                    if (executeBuy) {
+                        if (!BuildConfig.PURCHASE_EXECUTION_ENABLED || !quote.executionEnabled) {
+                            mutableState.value = snapshot.copy(phase = PurchasePhase.FAILED, quote = null,
+                                message = quote.executionReason ?: "Live execution is not available for this route.")
+                            return@withLock
+                        }
+                        quote.requireUsable(now())
+                        // COMMITTING is reserved before execution starts; UI recomposition or a
+                        // second callback cannot replay this quote or cancel its signing job.
+                        clearOptionsCache()
+                        mutableState.value = snapshot.copy(phase = PurchasePhase.COMMITTING, quote = quote,
+                            status = null, message = "Securing your purchase…")
+                        execute(session.userId, snapshot, quote)
+                    } else {
+                        mutableState.value = snapshot.copy(phase = PurchasePhase.REVIEW, quote = quote, status = null,
+                            message = null, ambiguousSubmission = false)
+                    }
                 } catch (cancelled: CancellationException) { throw cancelled }
-                catch (failure: PurchaseException) { fail(snapshot.stockId, failure, snapshot.options, asset.id,
-                    snapshot.selectedDestinationId, side) }
-                catch (_: Exception) { fail(snapshot.stockId, serviceFailure(), snapshot.options, asset.id,
-                    snapshot.selectedDestinationId, side) }
+                catch (failure: PurchaseException) {
+                    if (mutableState.value === quoting) fail(snapshot.stockId, failure, snapshot.options, asset.id,
+                        snapshot.selectedDestinationId, side)
+                }
+                catch (_: Exception) {
+                    if (mutableState.value === quoting) fail(snapshot.stockId, serviceFailure(), snapshot.options, asset.id,
+                        snapshot.selectedDestinationId, side)
+                }
             }
         }
     }
@@ -224,9 +280,16 @@ class PurchaseCoordinator internal constructor(
                 ?: "Live execution is not enabled yet. You can review routes without moving funds.")
             return
         }
+        try { quote.requireUsable(now()) } catch (failure: PurchaseException) {
+            mutableState.value = snapshot.copy(phase = PurchasePhase.FAILED, quote = null,
+                message = failure.userMessage)
+            return
+        }
         operationJob?.cancel()
         // A committed order can change balances on either chain. Never reuse its old options.
         clearOptionsCache()
+        mutableState.value = snapshot.copy(phase = PurchasePhase.COMMITTING, quote = quote,
+            status = null, message = "Securing your order…")
         operationJob = scope.launch {
             operationMutex.withLock { execute(userId, snapshot, quote) }
         }
@@ -285,20 +348,25 @@ class PurchaseCoordinator internal constructor(
     }
 
     private fun presentOptions(stockId: String, side: OrderSide, options: PurchaseOptions) {
-        val current = mutableState.value
-        // A background balance refresh may finish after the user has started a quote or a transfer.
-        if (current.stockId != stockId || current.side != side ||
-            current.phase !in setOf(PurchasePhase.LOADING_OPTIONS, PurchasePhase.ENTRY,
-                PurchasePhase.FAILED, PurchasePhase.UNAVAILABLE)) return
-        val selectedAsset = preferredPaymentAssetId(options, side, manuallySelectedPaymentAssetId)
-        mutableState.value = if (options.purchasable && selectedAsset != null) {
-            PurchaseUiState(stockId, PurchasePhase.ENTRY, options, selectedAsset,
-                selectedDestinationId = current.selectedDestinationId?.takeIf { selected ->
-                    options.destinations.any { it.id == selected && it.enabled }
-                } ?: options.defaultDestinationId, side = side)
-        } else {
-            PurchaseUiState(stockId, PurchasePhase.UNAVAILABLE, options, message = options.reason
-                ?: "No verified ${side.name.lowercase()} route is currently available for this listing.", side = side)
+        while (true) {
+            val current = mutableState.value
+            // A balance refresh can finish just as a Buy tap reserves QUOTING. Never replace that
+            // state or a payment choice made while the request was in flight.
+            if (current.stockId != stockId || current.side != side ||
+                current.quote != null || current.status != null || current.ambiguousSubmission ||
+                current.phase !in setOf(PurchasePhase.LOADING_OPTIONS, PurchasePhase.ENTRY,
+                    PurchasePhase.FAILED, PurchasePhase.UNAVAILABLE)) return
+            val selectedAsset = preferredPaymentAssetId(options, side, manuallySelectedPaymentAssetId)
+            val refreshed = if (options.purchasable && selectedAsset != null) {
+                PurchaseUiState(stockId, PurchasePhase.ENTRY, options, selectedAsset,
+                    selectedDestinationId = current.selectedDestinationId?.takeIf { selected ->
+                        options.destinations.any { it.id == selected && it.enabled }
+                    } ?: options.defaultDestinationId, side = side)
+            } else {
+                PurchaseUiState(stockId, PurchasePhase.UNAVAILABLE, options, message = options.reason
+                    ?: "No verified ${side.name.lowercase()} route is currently available for this listing.", side = side)
+            }
+            if (mutableState.compareAndSet(current, refreshed)) return
         }
     }
 
@@ -579,6 +647,18 @@ internal fun canReusePurchaseState(
     requestedSide: OrderSide = OrderSide.BUY,
 ): Boolean = boundUserId != null && boundUserId == requestedUserId &&
     currentStockId == requestedStockId && currentSide == requestedSide && phase != PurchasePhase.IDLE
+
+/** Atomically claim one quote request before any asynchronous work or wallet action can start. */
+internal fun reserveQuoteRequest(
+    state: MutableStateFlow<PurchaseUiState>,
+    snapshot: PurchaseUiState,
+): PurchaseUiState? {
+    if (snapshot.phase !in setOf(PurchasePhase.ENTRY, PurchasePhase.FAILED) ||
+        snapshot.busy || snapshot.ambiguousSubmission) return null
+    val quoting = snapshot.copy(phase = PurchasePhase.QUOTING, quote = null, status = null,
+        message = "Finding the best verified route…", ambiguousSubmission = false)
+    return quoting.takeIf { state.compareAndSet(snapshot, quoting) }
+}
 
 /** Choose the largest spendable holding by portfolio value, keeping an explicit wallet choice. */
 internal fun preferredPaymentAssetId(

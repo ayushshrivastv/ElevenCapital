@@ -4,7 +4,7 @@ import type { PrivyPrincipal } from './privy-auth.js';
 import { destinationFrom, displayAmount, EVM_NATIVE, humanAmount, normalizeNetwork, paymentAssetDefinition,
   PurchaseRpcUnavailableError, walletForNetwork, type PaymentAssetDefinition, type PurchaseChainReader } from './purchase-chain.js';
 import { LiFiError, type LiFiRouteQuote, type PurchaseRouter } from './lifi.js';
-import { RELAY_ANTHROPIC_TOOL } from './relay.js';
+import { RELAY_ANTHROPIC_MINT, RELAY_ANTHROPIC_TOOL } from './relay.js';
 import { PurchaseLedger, PurchaseLedgerError } from './purchase-ledger.js';
 import { completedPurchaseActivity, type PurchaseActivityResponse } from './purchase-activity.js';
 import { PurchaseQuoteResponseSchema, type PurchaseAction, type PurchaseCommitResponse, type PurchaseDestination,
@@ -84,13 +84,16 @@ export class PurchaseService implements PurchaseApi {
     const fundedUsdc = funded.filter(asset => asset.symbol === 'USDC').sort((a, b) => a.id.localeCompare(b.id));
     const fundedById = [...funded].sort((a, b) => a.id.localeCompare(b.id));
     const enabledById = [...enabled].sort((a, b) => a.id.localeCompare(b.id));
+    const anthropicEthFallback = stock.id === `prestocks:${RELAY_ANTHROPIC_MINT}`
+      ? enabled.find(asset => asset.id === 'ETHEREUM:ETH')?.id : undefined;
     const reason = destinations.length === 0 ? 'This listing has no verified token deployment on a supported wallet network. Exchange-only listings require an exchange account.' :
       selling && !funded.length ? `No ${stock.symbol} tokens are available to sell in this wallet.` :
       enabled.length === 0 ? 'Wallet balances are temporarily unavailable on every supported network.' : null;
     return { schemaVersion: 1, stockId: stock.id, purchasable: reason === null, reason, paymentAssets, destinations,
       executionEnabled: this.executionEnabled,
       executionReason: this.executionEnabled ? null : 'Trading is not enabled on this server.',
-      defaultPaymentAssetId: valued[0]?.id ?? fundedUsdc[0]?.id ?? fundedById[0]?.id ?? enabledById[0]?.id ?? null,
+      defaultPaymentAssetId: valued[0]?.id ?? fundedUsdc[0]?.id ?? fundedById[0]?.id ??
+        anthropicEthFallback ?? enabledById[0]?.id ?? null,
       // Auto prefers an independently verified direct route, then compares preview alternatives.
       defaultDestinationId: null };
   }
