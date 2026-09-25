@@ -17,6 +17,7 @@ export type UnderlyingReference = {
   changePercent: string | null;
   turnoverLocal: string | null;
   points: Chart['points'];
+  historyWindowMs?: number;
 };
 
 /** Resolve an exact ISIN search to one listing in the issuer-declared country. */
@@ -54,8 +55,10 @@ function safeInteger(raw: unknown): number | null {
 }
 
 /** Normalize one public 5-minute underlying-share chart; no ticker fallback or cross-listing substitution. */
-export function normalizeUnderlyingReference(raw: unknown, expectedSymbol: string, fetchedAt: number): UnderlyingReference | null {
-  if (!YahooSymbol.test(expectedSymbol) || !Number.isFinite(fetchedAt)) return null;
+export function normalizeUnderlyingReference(raw: unknown, expectedSymbol: string, fetchedAt: number,
+  historyWindowMs = 86_400_000): UnderlyingReference | null {
+  if (!YahooSymbol.test(expectedSymbol) || !Number.isFinite(fetchedAt) || !Number.isFinite(historyWindowMs) ||
+    historyWindowMs <= 0 || historyWindowMs > 366 * 86_400_000) return null;
   const root = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   const chart = typeof root.chart === 'object' && root.chart !== null && !Array.isArray(root.chart) ? root.chart as Record<string, unknown> : {};
   const results = Array.isArray(chart.result) ? chart.result : [];
@@ -82,7 +85,7 @@ export function normalizeUnderlyingReference(raw: unknown, expectedSymbol: strin
     const seconds = safeInteger(timestamps[index]), price = finiteDecimal(closes[index]);
     if (seconds === null || price === null) continue;
     const at = seconds * 1000;
-    if (at > fetchedAt + 300_000 || at < fetchedAt - 86_400_000) continue;
+    if (at > fetchedAt + 300_000 || at < fetchedAt - historyWindowMs) continue;
     points.push({ timestamp: new Date(at).toISOString(), price });
     const rawVolume = volumes[index];
     const volume = rawVolume === null || rawVolume === undefined ? null : nonnegativeAmount(String(rawVolume));
@@ -91,7 +94,8 @@ export function normalizeUnderlyingReference(raw: unknown, expectedSymbol: strin
   points.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   const unique = points.filter((point, index) => index === 0 || point.timestamp !== points[index - 1]!.timestamp);
   return { symbol: expectedSymbol, fetchedAt: new Date(fetchedAt).toISOString(), sourceAt, localPrice,
-    changePercent: percent, turnoverLocal: hasTurnover && turnover.lte('1e40') ? turnover.toFixed() : null, points: unique };
+    changePercent: percent, turnoverLocal: hasTurnover && turnover.lte('1e40') ? turnover.toFixed() : null,
+    points: unique, historyWindowMs };
 }
 
 /** Anchor the underlying path to the issuer's USD price while retaining explicit reference provenance. */
@@ -123,11 +127,19 @@ export function anchoredReferencePoints(stock: Stock, reference: UnderlyingRefer
   return reference.points.map(point => ({ timestamp: point.timestamp, price: new Money(point.price).times(ratio).toSignificantDigits(40).toFixed() }));
 }
 
-/** Yahoo fallback is requested as a one-day series; never relabel it as week/month/YTD history. */
+/** A share reference may be used only within the exact history window requested upstream. */
 export function underlyingReferenceChartPoints(stock: Stock, reference: UnderlyingReference, range: ChartRange,
   now: number): Chart['points'] | null {
-  const duration = range === 'ONE_HOUR' ? 3_600_000 : range === 'ONE_DAY' ? 86_400_000 : null;
-  if (duration === null || !Number.isFinite(now)) return null;
+  if (!Number.isFinite(now)) return null;
+  const duration = range === 'ONE_HOUR' ? 3_600_000 : range === 'ONE_DAY' ? 86_400_000 :
+    range === 'ONE_WEEK' ? 604_800_000 : range === 'ONE_MONTH' ? 2_592_000_000 :
+    now - Date.UTC(new Date(now).getUTCFullYear(), 0, 1);
+  if ((reference.historyWindowMs ?? 86_400_000) < duration) return null;
   const since = now - duration;
-  return anchoredReferencePoints(stock, reference).filter(point => Date.parse(point.timestamp) >= since);
+  const points = anchoredReferencePoints(stock, reference).filter(point => Date.parse(point.timestamp) >= since);
+  // A long-range request can still return only recent rows for a newly listed or
+  // temporarily incomplete symbol. Do not stretch that fragment across the range.
+  if ((range === 'ONE_WEEK' || range === 'ONE_MONTH' || range === 'YEAR_TO_DATE') &&
+    (points.length < 3 || Date.parse(points[0]!.timestamp) > since + duration * 0.25)) return null;
+  return points;
 }

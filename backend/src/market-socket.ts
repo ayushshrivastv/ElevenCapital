@@ -20,6 +20,17 @@ export interface SocketMarketService {
   withCurrent?(chart: Chart): Chart;
 }
 
+/** A token-priced listing may carry verified token history or an explicitly labeled share reference. */
+export function chartMatchesStock(chart: Chart, stock: Stock): boolean {
+  if (chart.stockId !== stock.id) return false;
+  if (chart.basis === stock.quote.basis && chart.currency === stock.quote.currency) return true;
+  if ((stock.provider === 'backed' || stock.provider === 'prestocks') && chart.basis === 'onchain_token_market' &&
+    chart.currency === 'USD' && stock.deployments.some(deployment => deployment.network.toLowerCase() === 'solana')) return true;
+  return stock.provider === 'backed' && chart.basis === 'underlying_share_reference' &&
+    (chart.currency === 'USD' || chart.currency === 'USDC') &&
+    stock.underlying.listingCountry === 'US' && stock.underlying.currency === 'USD' && !!stock.underlying.isin;
+}
+
 /** One ordered catalog and one connection per app; no socket or request per row. */
 export class MarketSocket {
   readonly sessionId = randomUUID();
@@ -185,7 +196,7 @@ export class MarketSocket {
       client.chartGeneration++; client.chart = undefined; client.chartLoadedAt = 0; client.chartPending = false;
       return;
     }
-    if (client.chart && (client.chart.basis !== stock.quote.basis || client.chart.currency !== stock.quote.currency)) {
+    if (client.chart && !chartMatchesStock(client.chart, stock)) {
       client.chartGeneration++; client.chart = undefined; client.chartLoadedAt = 0; client.chartPending = false;
     }
     if (client.chart && detailChanged) this.sendChart(client, client.chart);

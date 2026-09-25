@@ -17,6 +17,16 @@ const Money = Decimal.clone({ precision: 128 });
 const PUBLICATION_INTERVAL_MS = 16;
 const PUBLICATION_LATENCY_SAMPLE_LIMIT = 256;
 const BACKGROUND_ANALYTICS_LIMIT = 20;
+const MIN_LOCAL_HISTORY_COVERAGE = 0.9;
+
+/** Server-observed quotes are history only after they cover the selected time window. */
+export function locallyObservedHistoryCoversRange(points: Chart['points'], range: ChartRange, now: number): boolean {
+  if (points.length < 3 || !Number.isFinite(now)) return false;
+  const since = Number(candleRequest(range, now).startTime) * 1000;
+  const first = Date.parse(points[0]!.timestamp), last = Date.parse(points.at(-1)!.timestamp);
+  return Number.isFinite(first) && Number.isFinite(last) && first >= since && last <= now + 5_000 &&
+    last - first >= (now - since) * MIN_LOCAL_HISTORY_COVERAGE;
+}
 
 /** Select one bounded, rotating exact-mint background slice. UI interests use the separate priority worker. */
 export function rotatingAnalyticsTargets(stocks: readonly Stock[], interests: ReadonlySet<string>, cursor: number,
@@ -529,9 +539,15 @@ export class LiveMarketService {
   /** Token-priced listings can still need share history when no exact-token pool has candles.
    * Resolve the issuer ISIN, never a guessed ticker or a conflicting provider identity. */
   private async underlyingHistoryReference(stock: Stock, range: ChartRange): Promise<UnderlyingReference | null> {
-    if (!['ONE_HOUR', 'ONE_DAY'].includes(range) || stock.provider !== 'backed' ||
+    if (stock.provider !== 'backed' ||
       stock.underlying.listingCountry !== 'US' || stock.underlying.currency !== 'USD' || !stock.underlying.isin) return null;
-    const key = `${stock.id}:${stock.underlying.isin}`;
+    const now = this.now();
+    const request = range === 'ONE_HOUR' ? { interval: '5m', span: '1d', historyWindowMs: 86_400_000 } :
+      range === 'ONE_DAY' ? { interval: '5m', span: '5d', historyWindowMs: 5 * 86_400_000 } :
+      range === 'ONE_WEEK' ? { interval: '1h', span: '1mo', historyWindowMs: 31 * 86_400_000 } :
+      range === 'ONE_MONTH' ? { interval: '1d', span: '1mo', historyWindowMs: 31 * 86_400_000 } :
+      { interval: '1d', span: 'ytd', historyWindowMs: now - Date.UTC(new Date(now).getUTCFullYear(), 0, 1) + 86_400_000 };
+    const key = `${stock.id}:${stock.underlying.isin}:${range}`;
     let cache = this.underlyingHistoryCaches.get(key);
     if (!cache) {
       cache = new AsyncCache<UnderlyingReference | null>(60_000, 300_000, this.now, 30_000);
@@ -543,8 +559,8 @@ export class LiveMarketService {
       const symbol = resolveUnderlyingSymbol(search, stock);
       if (!symbol) return null;
       const raw = await this.http('yahoo', `/v8/finance/chart/${encodeURIComponent(symbol)}`,
-        { interval: '5m', range: '1d', includePrePost: 'true' });
-      return normalizeUnderlyingReference(raw, symbol, this.now());
+        { interval: request.interval, range: request.span, includePrePost: 'true' });
+      return normalizeUnderlyingReference(raw, symbol, this.now(), request.historyWindowMs);
     });
     return result.value ?? null;
   }
@@ -567,7 +583,7 @@ export class LiveMarketService {
           const referenceChart = await this.backpackReferenceChart(id, range, share);
           if (referenceChart) return this.withCurrent(referenceChart);
         }
-        const observed = this.underlyingReferences.get(id);
+        const observed = range === 'ONE_HOUR' || range === 'ONE_DAY' ? this.underlyingReferences.get(id) : undefined;
         const reference = observed && this.now() - Date.parse(observed.fetchedAt) <= 300_000
           ? observed : await this.underlyingHistoryReference(stock, range);
         if (reference) {
@@ -583,13 +599,15 @@ export class LiveMarketService {
 
       // Prefer complete, clearly labelled share history over a handful of points
       // collected since this development server started.
-      if (stock.quote.basis !== 'underlying_share_reference' && points.length >= 3) {
+      if (stock.quote.basis !== 'underlying_share_reference' && locallyObservedHistoryCoversRange(points, range, this.now())) {
         return this.withCurrent({ ...base, points, status: 'ok',
           statusReason: `${native.statusReason ?? 'Exact-mint pool history is unavailable.'} Showing ${points.length} exact-token price observations retained by this server.` });
       }
 
+      const observedSpan = points.length > 1 ? Math.max(0, Date.parse(points.at(-1)!.timestamp) - Date.parse(points[0]!.timestamp)) : 0;
       return { ...base, statusReason: `${native.statusReason ?? 'Exact-mint token history is unavailable.'} ` +
-        `${points.length} locally observed price point${points.length === 1 ? ' is' : 's are'} insufficient for a market graph.` };
+        `${points.length} locally observed price point${points.length === 1 ? ' is' : 's are'} insufficient: ` +
+        `observations over ${Math.round(observedSpan / 60_000)} minutes do not cover the selected ${range} window.` };
     }
 
     const reference = stock.quote.basis === 'underlying_share_reference' ? this.stocks.get(this.referenceIds.get(id) ?? '') : undefined;
@@ -611,7 +629,9 @@ export class LiveMarketService {
   }
   withCurrent(chart: Chart): Chart {
     const stock = this.stocks.get(chart.stockId);
-    if (!stock || stock.quote.price === null || !stock.quote.receivedAt || stock.quote.currency !== chart.currency || stock.quote.basis !== chart.basis ||
+    // A current quote is a chart tail, never a replacement for missing history.
+    if (chart.status !== 'ok' || chart.points.length < 3 || !stock || stock.quote.price === null || !stock.quote.receivedAt ||
+      stock.quote.currency !== chart.currency || stock.quote.basis !== chart.basis ||
       this.now() - Date.parse(stock.quote.receivedAt) > 300_000 || this.now() < Date.parse(stock.quote.receivedAt)) return chart;
     const at = stock.quote.asOf ?? stock.quote.receivedAt;
     if (chart.points.at(-1)?.timestamp && at < chart.points.at(-1)!.timestamp) return chart;

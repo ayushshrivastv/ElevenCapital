@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { WebSocket, WebSocketServer } from 'ws';
 import { createServer } from 'node:http';
-import { MarketSocket } from '../src/market-socket.js';
+import { MarketSocket, chartMatchesStock } from '../src/market-socket.js';
 import { RealtimeCatalog } from '../src/realtime.js';
 import { buildApp } from '../src/app.js';
 import { applyExternalTicker, BackpackLive } from '../src/backpack-live.js';
 import { initialStatistics } from '../src/statistics.js';
 import { backpackActivity } from '../src/activity.js';
-import { DisabledTrading, StockSchema, type Catalog, type Stock } from '../src/schema.js';
+import { DisabledTrading, StockSchema, type Catalog, type Chart, type Stock } from '../src/schema.js';
 import type { CatalogMutation } from '../src/market-update.js';
 const now = Date.parse('2026-09-19T12:00:00Z'), iso = new Date(now).toISOString();
 function stock(id = 'MSFT.US'): Stock {
@@ -24,6 +24,21 @@ class MemorySocket extends EventEmitter {
  send(value:unknown){this.frames.push(JSON.parse(String(value)));}
  ping(){}close(){}terminate(){}
 }
+test('a verified token or same-share history remains valid when the live quote uses another basis', () => {
+ const backed: Stock={...stock(),id:'backed:verified-asset',provider:'backed',providerAssetId:'verified-asset',
+  underlying:{symbol:'MSFT',isin:'US5949181045',cusip:'594918104',listingCountry:'US',currency:'USD'},
+  quote:{...stock().quote,currency:'USD',basis:'onchain_token_market'},
+  deployments:[{network:'Solana',address:'XspzcW1PRtgf6Wj92HCiZdjzKCyFekVD8P5Ueh3dRMX',decimals:8,depositEnabled:true,withdrawEnabled:true}]};
+ const chart: Chart={stockId:backed.id,range:'ONE_DAY',status:'ok',basis:'underlying_share_reference',currency:'USDC',
+  receivedAt:iso,points:[{timestamp:iso,price:'100'}]};
+ assert.equal(chartMatchesStock(chart,backed),true);
+ assert.equal(chartMatchesStock({...chart,basis:'onchain_token_market',currency:'USD'},backed),true);
+ assert.equal(chartMatchesStock({...chart,stockId:'backed:other'},backed),false);
+ assert.equal(chartMatchesStock(chart,{...backed,underlying:{...backed.underlying,isin:null}}),false);
+ assert.equal(chartMatchesStock(chart,{...backed,provider:'prestocks'}),false);
+ assert.equal(chartMatchesStock({...chart,basis:'onchain_token_market',currency:'USD'},
+  {...backed,provider:'prestocks',quote:{...backed.quote,basis:'provider_indicative_token'}}),true);
+});
 test('external ticker preserves decimal precision and turnover; rejects old, foreign and future events',()=>{
  const original=stock(),tick={e:'externalTicker',s:'MSFT.US_USDC',o:'100',c:'100.00000000000000001',V:'123456789.00000000000000001',E:String(BigInt(now)*1000n)};
  const result=applyExternalTicker(original,tick,now)!;

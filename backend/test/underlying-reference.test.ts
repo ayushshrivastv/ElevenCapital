@@ -62,6 +62,23 @@ test('one-day Yahoo points can be filtered to one hour but cannot be presented a
   }
 });
 
+test('a separately requested longer Yahoo series can supply verified week and month share history', () => {
+  const days = [29, 14, 6, 4, 2, 0];
+  const raw = { chart: { result: [{ meta: { symbol: 'XRX', currency: 'USD', instrumentType: 'EQUITY', regularMarketPrice: '3.4',
+    regularMarketTime: String(NOW / 1000) }, timestamp: days.map(day => String((NOW - day * 86_400_000) / 1000)),
+    indicators: { quote: [{ close: days.map((_, index) => String(3 + index / 10)), volume: days.map(() => '100') }] } }] } };
+  const month = normalizeUnderlyingReference(raw, 'XRX', NOW, 31 * 86_400_000)!;
+  assert.equal(underlyingReferenceChartPoints(stock(), month, 'ONE_WEEK', NOW)!.length, 4);
+  assert.equal(underlyingReferenceChartPoints(stock(), month, 'ONE_MONTH', NOW)!.length, 6);
+  assert.equal(underlyingReferenceChartPoints(stock(), month, 'YEAR_TO_DATE', NOW), null);
+  const dayOnly = normalizeUnderlyingReference(raw, 'XRX', NOW)!;
+  assert.equal(underlyingReferenceChartPoints(stock(), dayOnly, 'ONE_WEEK', NOW), null);
+  const recentFragment = { ...month, points: [2, 1, 0].map(day =>
+    ({ timestamp: new Date(NOW - day * 86_400_000).toISOString(), price: '3.4' })) };
+  assert.equal(underlyingReferenceChartPoints(stock(), recentFragment, 'ONE_WEEK', NOW), null);
+  assert.equal(underlyingReferenceChartPoints(stock(), recentFragment, 'ONE_MONTH', NOW), null);
+});
+
 test('underlying reference accepts lossless-json string timestamps and volumes', () => {
   const raw = { chart: { result: [{ meta: { symbol: 'XRX', currency: 'USD', instrumentType: 'EQUITY', regularMarketPrice: '3.4',
     regularMarketChangePercent: '-2', regularMarketTime: String(NOW / 1000) },
