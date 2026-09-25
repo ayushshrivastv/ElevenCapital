@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.CompositionLocalProvider
@@ -18,33 +19,39 @@ import com.android.resources.Density
 import com.android.resources.NightMode
 import com.elevencapital.app.data.CompletedPurchaseSide
 import com.elevencapital.app.data.CompletedPurchaseTransaction
+import com.elevencapital.app.data.FixtureStockData
 import com.elevencapital.app.data.PurchaseUsdBasis
 import com.elevencapital.app.data.WalletActivityChain
 import com.elevencapital.app.data.WalletActivityStatus
 import com.elevencapital.app.data.WalletTransaction
 import com.elevencapital.app.data.WalletTransactionDirection
 import com.elevencapital.app.data.WalletUsdBasis
-import com.elevencapital.app.purchase.EvmPurchaseAction
-import com.elevencapital.app.purchase.EvmPurchaseTransaction
-import com.elevencapital.app.purchase.PurchaseActionKind
 import com.elevencapital.app.purchase.PurchaseDestination
 import com.elevencapital.app.purchase.PurchaseNetwork
 import com.elevencapital.app.purchase.PurchaseOptions
 import com.elevencapital.app.purchase.PurchasePaymentAsset
 import com.elevencapital.app.purchase.PurchasePhase
-import com.elevencapital.app.purchase.PurchaseQuote
-import com.elevencapital.app.purchase.PurchaseQuoteBinding
 import com.elevencapital.app.purchase.PurchaseUiState
 import com.elevencapital.app.screens.HomeScreen
+import com.elevencapital.app.screens.AccountScreen
+import com.elevencapital.app.screens.PreviewStockHolding
+import com.elevencapital.app.screens.PreviewWalletPurchase
+import com.elevencapital.app.screens.PreviewWalletState
+import com.elevencapital.app.screens.previewStockTrade
+import com.elevencapital.app.screens.previewStockTradeState
+import com.elevencapital.app.screens.StockBuySuccessNotice
+import com.elevencapital.app.screens.StockDetailScreen
 import com.elevencapital.app.screens.TradeScreen
 import com.elevencapital.app.screens.TransferHistoryScreen
 import com.elevencapital.app.ui.LocalReferenceScale
 import com.elevencapital.app.ui.WalletStyle
+import com.elevencapital.app.ui.rd
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.time.Instant
 import com.elevencapital.core.stock.Stock
 import com.elevencapital.core.stock.StockId
+import com.elevencapital.core.stock.StockLogoReference
 import com.elevencapital.core.stock.StockQuote
 import com.elevencapital.core.stock.flow.OrderSide
 import org.junit.Rule
@@ -80,6 +87,53 @@ class TransactionPagePreviewTest {
         StockDock(RootTab.Home, {}, Modifier.align(Alignment.BottomCenter))
     }
 
+    @Test fun homeWithPreviewFundingAndBuys() = capture("home_preview_funding_and_buys") {
+        val now = System.currentTimeMillis()
+        HomeScreen(
+            balance = BigDecimal.ZERO,
+            walletAddress = "8EMfogw4PH43J5vZ9",
+            walletConnected = true,
+            displayName = "Ayush",
+            transactions = emptyList(),
+            walletActivityStatus = WalletActivityStatus.OK,
+            previewWalletState = PreviewWalletState(4, now - 120_000L, listOf(
+                PreviewWalletPurchase("backed:eba060bd-f7b3-49e3-8ef1-99869351b434", "SPCXx",
+                    BigDecimal("0.01"), now - 60_000L),
+                PreviewWalletPurchase("backpack:NKE.US", "NKE.US",
+                    BigDecimal("0.02"), now - 30_000L),
+            )),
+            historyStorageHealthy = true,
+            onStocks = {}, onReceive = {}, onSend = {}, onManage = {}, onHistory = {},
+            greeting = "Good evening",
+        )
+        StockDock(RootTab.Home, {}, Modifier.align(Alignment.BottomCenter))
+    }
+
+    @Test fun nikePreviewBuyEntry() = capture("nike_preview_buy_entry") {
+        val nike = Stock(StockId("backpack:NKE.US"), "NKE.US", "NIKE, Inc.",
+            StockQuote(BigDecimal("35.73"), "USD"))
+        TradeScreen(nike, paymentBalance = BigDecimal("4.80"), onChooseStock = {},
+            initialAmountUsd = "0.02",
+            purchaseState = previewStockTradeState(nike, BigDecimal("0.04151"), BigDecimal("4.80")),
+            preview = previewStockTrade(nike, BigDecimal("0.04151"), processing = false))
+    }
+
+    @Test fun portfolioWithPreviewSolAndStocks() = capture("portfolio_preview_sol_and_stocks") {
+        val spcxx = Stock(StockId("backed:eba060bd-f7b3-49e3-8ef1-99869351b434"),
+            "SPCXx", "SpaceX xStock", StockQuote(BigDecimal("147.00"), "USD"))
+        val nike = Stock(StockId("backpack:NKE.US"), "NKE.US", "NIKE, Inc.",
+            StockQuote(BigDecimal("35.73"), "USD"))
+        AccountScreen(
+            balance = BigDecimal("6.044"), tokenHoldings = emptyList(), holdings = emptyList(),
+            onStock = {}, previewSolBalance = BigDecimal("0.04125056"),
+            previewSolValueUsd = BigDecimal("4.77"),
+            previewHoldings = listOf(
+                PreviewStockHolding(spcxx, BigDecimal("0.00077351"), BigDecimal("0.114")),
+                PreviewStockHolding(nike, BigDecimal("0.032505"), BigDecimal("1.16")),
+            ),
+        )
+    }
+
     @Test fun allTransactionsWithSampleActivity() = capture("transactions_preview") {
         TransferHistoryScreen(
             verifiedUserId = "preview-user",
@@ -93,10 +147,10 @@ class TransactionPagePreviewTest {
         )
     }
 
-    @Test fun finalPurchaseReviewPreview() = capture("purchase_review_preview") {
+    @Test fun purchaseEntryPreview() = capture("purchase_entry_preview") {
         val stock = Stock(StockId("prestocks:Anthropic"), "ANTHROPIC", "Anthropic",
-            StockQuote(BigDecimal("10"), "USD"))
-        val paymentAddress = "0x" + "a".repeat(40)
+            StockQuote(BigDecimal("10"), "USD"),
+            logo = StockLogoReference("reference/anthropic/standalone"))
         val solanaAddress = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
         val payment = PurchasePaymentAsset("ARBITRUM:USDC", "USDC", "USD Coin",
             PurchaseNetwork.ARBITRUM, "0x" + "b".repeat(40), 6,
@@ -105,22 +159,21 @@ class TransactionPagePreviewTest {
             solanaAddress, "ANTHROPIC", 6, true)
         val options = PurchaseOptions(stock.id.value, true, null, true, null,
             listOf(payment), listOf(destination), payment.id, destination.id)
-        val binding = PurchaseQuoteBinding("123e4567-e89b-42d3-a456-426614174000", "preview-user",
-            stock.id.value, payment.id, PurchaseNetwork.ARBITRUM, 6, destination.id,
-            BigInteger("1000000"), 50, setOf(paymentAddress, solanaAddress))
-        val action = EvmPurchaseAction("sample-action", 0, PurchaseActionKind.EVM_ROUTE,
-            PurchaseNetwork.ARBITRUM, paymentAddress,
-            EvmPurchaseTransaction(paymentAddress, "0x" + "c".repeat(40), "0x", "0x0", "0x5208",
-                "0x1", null, null, null))
-        val quote = PurchaseQuote("sample-quote", binding, destination, BigDecimal.ONE,
-            BigDecimal("0.10"), BigDecimal("10"), BigDecimal("0.05"), null,
-            50, BigDecimal("0.095"), BigInteger("95000"), Instant.now().plusSeconds(300),
-            1, listOf(action), true, null)
         TradeScreen(stock, paymentBalance = BigDecimal.ONE, onChooseStock = {},
-            purchaseState = PurchaseUiState(stockId = stock.id.value, phase = PurchasePhase.REVIEW,
+            initialAmountUsd = "1",
+            purchaseState = PurchaseUiState(stockId = stock.id.value, phase = PurchasePhase.ENTRY,
                 options = options, selectedPaymentAssetId = payment.id,
-                selectedDestinationId = destination.id, quote = quote, side = OrderSide.BUY),
-            onExecutePurchase = {})
+                selectedDestinationId = destination.id, side = OrderSide.BUY),
+            onPurchaseNow = {})
+    }
+
+    @Test fun completedBuyNoticePreview() = capture("completed_buy_notice_preview") {
+        val fixtures = FixtureStockData.load(paparazzi.context.assets)
+        val stock = requireNotNull(fixtures.repository.getStock(StockId("reference-spcx")))
+        StockDetailScreen(stock, onBack = {}, onBuy = {}, isWatched = false,
+            onWatch = {}, detail = fixtures.detail(stock.id))
+        StockBuySuccessNotice(stock,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = rd(9f)))
     }
 
     private fun capture(name: String, content: @androidx.compose.runtime.Composable androidx.compose.foundation.layout.BoxScope.() -> Unit) {

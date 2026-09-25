@@ -68,6 +68,10 @@ fun TransferHistoryScreen(
     stockSymbols: Map<String, String> = emptyMap(),
     storageHealthy: Boolean,
     onBack: () -> Unit,
+    previewSpcxxPosition: PreviewSpcxxPosition? = null,
+    onPreviewSpcxxTransaction: () -> Unit = {},
+    previewWalletState: PreviewWalletState = PreviewWalletState(),
+    onPreviewPurchaseTransaction: (PreviewWalletPurchase) -> Unit = {},
 ) {
     // Defend the UI boundary as well as the repository boundary: records for a previous Privy
     // identity never render during account switching or logout.
@@ -75,16 +79,23 @@ fun TransferHistoryScreen(
         records.filter { it.review.userId == verifiedUserId }
             .sortedByDescending(TransferJournalRecord::updatedAtEpochMillis)
     }
-    val history = remember(scoped, walletTransactions, purchaseTransactions) {
-        homeActivityItems(scoped, walletTransactions, purchaseTransactions).map { item ->
+    val history = remember(scoped, walletTransactions, purchaseTransactions, previewSpcxxPosition, previewWalletState) {
+        homeActivityItems(scoped, walletTransactions, purchaseTransactions, previewSpcxxPosition,
+            previewWalletState).map { item ->
             HistoryItem(
                 id = item.journal?.let { "journal:${it.review.operationId.value}" }
                     ?: item.chain?.let { "chain:${it.id}" }
-                    ?: "purchase:${item.purchase?.id}",
+                    ?: item.purchase?.let { "purchase:${it.id}" }
+                    ?: item.previewPurchase?.let { "preview:purchase:${it.stockId}:${it.purchasedAtEpochMillis}" }
+                    ?: item.previewFundingAt?.let { "preview:funding:$it" }
+                    ?: "preview:spcxx:${item.previewSpcxx?.purchasedAtEpochMillis}",
                 timeMillis = item.timeMillis,
                 journal = item.journal,
                 chain = item.chain,
                 purchase = item.purchase,
+                previewSpcxx = item.previewSpcxx,
+                previewFundingAt = item.previewFundingAt,
+                previewPurchase = item.previewPurchase,
             )
         }
     }
@@ -125,6 +136,9 @@ fun TransferHistoryScreen(
                     item.journal?.let { TransferHistoryCard(it) }
                         ?: item.chain?.let { ChainHistoryCard(it) }
                         ?: item.purchase?.let { PurchaseHistoryCard(it, stockSymbols) }
+                        ?: item.previewFundingAt?.let { PreviewFundingHistoryCard(it) }
+                        ?: item.previewPurchase?.let { PreviewPurchaseHistoryCard(it, onPreviewPurchaseTransaction) }
+                        ?: item.previewSpcxx?.let { PreviewSpcxxHistoryCard(it, onPreviewSpcxxTransaction) }
                 }
                 item { Spacer(Modifier.height(rd(28f))) }
             }
@@ -138,7 +152,92 @@ private data class HistoryItem(
     val journal: TransferJournalRecord? = null,
     val chain: WalletTransaction? = null,
     val purchase: CompletedPurchaseTransaction? = null,
+    val previewSpcxx: PreviewSpcxxPosition? = null,
+    val previewFundingAt: Long? = null,
+    val previewPurchase: PreviewWalletPurchase? = null,
 )
+
+@Composable
+private fun PreviewFundingHistoryCard(receivedAt: Long) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(rd(18f))).background(P.Card)
+        .padding(horizontal = rd(16f), vertical = rd(15f))) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(rd(40f)).clip(CircleShape).background(P.Chip),
+                contentAlignment = Alignment.Center) {
+                RefIcon("deposit", 20f, P.Lime)
+            }
+            Spacer(Modifier.width(rd(11f)))
+            Column(Modifier.weight(1f)) {
+                RefText("Solana", 17f, P.White, FontWeight.Bold)
+                Spacer(Modifier.height(rd(2f)))
+                RefText(historyTime(receivedAt), 12f, P.Muted)
+            }
+            RefText("+\$4.80", 14f, P.Lime, FontWeight.Bold)
+        }
+        Spacer(Modifier.height(rd(13f)))
+        HistoryValue("Incoming", "0.04151 SOL")
+    }
+}
+
+@Composable
+private fun PreviewPurchaseHistoryCard(purchase: PreviewWalletPurchase,
+    onHistoricalTransaction: (PreviewWalletPurchase) -> Unit) {
+    val received = when (purchase.stockId) {
+        SPCXX_PREVIEW_STOCK_ID -> "\$0.114 worth of SPCXx"
+        NIKE_PREVIEW_STOCK_ID -> "\$1.16 worth of NKE.US"
+        else -> null
+    }
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(rd(18f))).background(P.Card)
+        .clickable(role = Role.Button) { onHistoricalTransaction(purchase) }
+        .semantics { contentDescription = "Buy ${purchase.symbol}, open linked historical transaction on Solscan" }
+        .padding(horizontal = rd(16f), vertical = rd(15f))) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(rd(40f)).clip(CircleShape).background(P.Chip),
+                contentAlignment = Alignment.Center) {
+                RefIcon("arrowUpRight", 20f, P.White)
+            }
+            Spacer(Modifier.width(rd(11f)))
+            Column(Modifier.weight(1f)) {
+                RefText("Buy ${purchase.symbol}", 17f, P.White, FontWeight.Bold)
+                Spacer(Modifier.height(rd(2f)))
+                RefText(historyTime(purchase.purchasedAtEpochMillis), 12f, P.Muted)
+            }
+            RefText("−\$${purchase.spentUsd.setScale(2).toPlainString()}", 14f, P.White, FontWeight.Bold)
+        }
+        Spacer(Modifier.height(rd(13f)))
+        HistoryValue("From", "SOL on Solana")
+        received?.let {
+            Spacer(Modifier.height(rd(8f)))
+            HistoryValue("Received", it)
+        }
+    }
+}
+
+@Composable
+private fun PreviewSpcxxHistoryCard(position: PreviewSpcxxPosition, onHistoricalTransaction: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(rd(18f))).background(P.Card)
+        .clickable(role = Role.Button, onClick = onHistoricalTransaction)
+        .semantics { contentDescription = "Buy SPCXx, open linked historical transaction on Solscan" }
+        .padding(horizontal = rd(16f), vertical = rd(15f))) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(rd(40f)).clip(CircleShape).background(P.Chip),
+                contentAlignment = Alignment.Center) {
+                RefIcon("arrowUpRight", 20f, P.White)
+            }
+            Spacer(Modifier.width(rd(11f)))
+            Column(Modifier.weight(1f)) {
+                RefText("Buy SPCXx", 17f, P.White, FontWeight.Bold)
+                Spacer(Modifier.height(rd(2f)))
+                RefText(historyTime(position.purchasedAtEpochMillis), 12f, P.Muted)
+            }
+            RefText("−$1.00", 14f, P.White, FontWeight.Bold)
+        }
+        Spacer(Modifier.height(rd(13f)))
+        HistoryValue("From", "SOL on Solana")
+        Spacer(Modifier.height(rd(8f)))
+        HistoryValue("Received", "$0.114 worth of SPCXx")
+    }
+}
 
 @Composable
 private fun ChainHistoryCard(transaction: WalletTransaction) {
@@ -201,6 +300,7 @@ private fun PurchaseHistoryCard(transaction: CompletedPurchaseTransaction, stock
     }
     val received = transaction.side == CompletedPurchaseSide.SELL
     val amount = historyUsdAmount(transaction.valueUsd, transaction.side)
+    val solscanUrl = remember(transaction.transactionId) { purchaseHistorySolscanUrl(transaction.transactionId) }
     val context = LocalContext.current
     var copied by remember(transaction.transactionId) { mutableStateOf(false) }
     LaunchedEffect(copied) {
@@ -244,6 +344,17 @@ private fun PurchaseHistoryCard(transaction: CompletedPurchaseTransaction, stock
                 RefText(if (copied) "Copied" else compactTransactionId(transaction.transactionId),
                     12f, if (copied) P.Lime else P.White)
                 RefText(if (copied) "Full ID copied" else "Tap to copy full ID", 10.5f, P.Muted)
+            }
+        }
+        solscanUrl?.let { url ->
+            Spacer(Modifier.height(rd(13f)))
+            Box(
+                Modifier.fillMaxWidth().height(rd(42f)).clip(CircleShape).background(P.White)
+                    .clickable(role = Role.Button) { openPurchaseSolscan(context, url) }
+                    .semantics { contentDescription = "View completed stock trade on Solscan" },
+                contentAlignment = Alignment.Center,
+            ) {
+                RefText("View on Solscan", 13f, P.Background, FontWeight.SemiBold)
             }
         }
     }

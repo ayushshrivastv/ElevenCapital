@@ -14,6 +14,19 @@ import org.junit.Test
 
 class HomeTransactionsMergeTest {
     @Test
+    fun seededSolAndBothPreviewBuysAppearInTimeOrder() {
+        val preview = PreviewWalletState(4, 1_000L, listOf(
+            PreviewWalletPurchase(SPCXX_PREVIEW_STOCK_ID, "SPCXx", BigDecimal("0.01"), 2_000L),
+            PreviewWalletPurchase(NIKE_PREVIEW_STOCK_ID, "NKE.US", BigDecimal("0.02"), 3_000L),
+        ))
+        val items = homeActivityItems(emptyList(), emptyList(), emptyList(),
+            previewWalletState = preview)
+        assertEquals(listOf(NIKE_PREVIEW_STOCK_ID, SPCXX_PREVIEW_STOCK_ID),
+            items.mapNotNull { it.previewPurchase?.stockId })
+        assertEquals(1_000L, items.last().previewFundingAt)
+    }
+
+    @Test
     fun completedCrossChainBuyAppearsOnceAndUnrelatedTransfersRemainOrdered() {
         val evmHash = "0x" + "a".repeat(64)
         val solanaSignature = "3".repeat(88)

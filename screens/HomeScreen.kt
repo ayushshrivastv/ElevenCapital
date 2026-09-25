@@ -20,6 +20,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.res.painterResource
+import com.elevencapital.app.BuildConfig
 import com.elevencapital.app.R
 import com.elevencapital.app.data.CompletedPurchaseTransaction
 import com.elevencapital.app.data.WalletActivityStatus
@@ -49,6 +50,11 @@ fun HomeScreen(
     walletActivityStatus: WalletActivityStatus? = null,
     stockSymbols: Map<String, String> = emptyMap(),
     unitPricesUsd: Map<String, BigDecimal> = emptyMap(),
+    previewSpcxxPosition: PreviewSpcxxPosition? = null,
+    onPreviewSpcxxTransaction: () -> Unit = {},
+    previewWalletState: PreviewWalletState = PreviewWalletState(),
+    onRefreshTransactions: () -> Unit = {},
+    onPreviewPurchaseTransaction: ((PreviewWalletPurchase) -> Unit)? = null,
     historyStorageHealthy: Boolean,
     onStocks: () -> Unit,
     onReceive: () -> Unit,
@@ -61,6 +67,9 @@ fun HomeScreen(
     showTopPanel: Boolean = true,
 ) {
     val firstName = displayName?.trim()?.substringBefore(' ')?.takeIf(String::isNotBlank)
+    val displayedBalance = if (BuildConfig.DEBUG && previewWalletState.funded) {
+        (balance ?: BigDecimal.ZERO) + previewWalletState.availableUsd
+    } else balance
     BoxWithConstraints(Modifier.fillMaxSize().background(W.Background)) {
         val pageHeight = maxHeight
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -77,7 +86,7 @@ fun HomeScreen(
                     }
                 }
                 Spacer(Modifier.height(rd(32f)))
-                MainWalletCard(balance, walletAddress, walletConnected, balancePlaceholder, onManage)
+                MainWalletCard(displayedBalance, walletAddress, walletConnected, balancePlaceholder, onManage)
                 Spacer(Modifier.height(rd(26f)))
             }
             Column(
@@ -93,7 +102,12 @@ fun HomeScreen(
                 Spacer(Modifier.height(rd(26f)))
                 HomeWalletTransactions(transactions, walletTransactions, purchaseTransactions,
                     walletActivityStatus, historyStorageHealthy, onHistory,
-                    unitPricesUsd = unitPricesUsd, stockSymbols = stockSymbols)
+                    unitPricesUsd = unitPricesUsd, stockSymbols = stockSymbols,
+                    previewSpcxxPosition = previewSpcxxPosition,
+                    onPreviewSpcxxTransaction = onPreviewSpcxxTransaction,
+                    previewWalletState = previewWalletState,
+                    onRefreshTransactions = onRefreshTransactions,
+                    onPreviewPurchaseTransaction = onPreviewPurchaseTransaction)
                 // The floating dock must never cover the last row or the empty-state action.
                 Spacer(Modifier.height(rd(112f)))
             }

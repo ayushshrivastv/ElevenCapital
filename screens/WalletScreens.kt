@@ -58,6 +58,7 @@ import com.elevencapital.app.ui.P
 import com.elevencapital.app.ui.RefIcon
 import com.elevencapital.app.ui.RefText
 import com.elevencapital.app.ui.rd
+import com.elevencapital.app.ui.drawSolanaLogo
 import com.elevencapital.app.ui.rs
 import com.elevencapital.app.wallet.QrCodeMatrix
 import com.elevencapital.app.wallet.ValidatedWalletAddress
@@ -356,18 +357,7 @@ private fun ReceiveNetworkChoice(
                         lineTo(w * .5f, h * .82f); close()
                     }, Color.White)
                 } else {
-                    // White Solana mark on true black, matching the supplied artwork.
-                    repeat(3) { index ->
-                        val y = h * (.09f + index * .31f)
-                        val reverse = index == 1
-                        drawPath(Path().apply {
-                            moveTo(w * if (reverse) .10f else .27f, y)
-                            lineTo(w * if (reverse) .73f else .90f, y)
-                            lineTo(w * if (reverse) .90f else .73f, y + h * .20f)
-                            lineTo(w * if (reverse) .27f else .10f, y + h * .20f)
-                            close()
-                        }, Color.White)
-                    }
+                    drawSolanaLogo()
                 }
             }
         }

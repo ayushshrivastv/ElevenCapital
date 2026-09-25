@@ -83,18 +83,9 @@ class ReferenceScreenshotTest {
     fun stockOverview() = render("03_stock_overview") { openStock(fixtures.defaultStockId) }
 
     @Test
-    fun terminalCollapsed() = renderDetail(
-        "04_terminal_collapsed", DetailSection.TERMINAL, initialScrollOffset = 26,
+    fun stockOrderBook() = renderDetail(
+        "04_stock_order_book", DetailSection.ORDER_BOOK, initialScrollOffset = 26,
     )
-
-    @Test
-    fun terminalExpanded() = renderDetail(
-        "05_terminal_expanded", DetailSection.TERMINAL, expanded = true,
-        initialScrollIndex = 2, initialScrollOffset = 28,
-    )
-
-    @Test
-    fun liveFeed() = renderDetail("09_live_feed", DetailSection.LIVE_FEED)
 
     @Test
     fun stockPurchase() = render("06_stock_purchase") {
@@ -230,7 +221,6 @@ class ReferenceScreenshotTest {
     private fun renderDetail(
         name: String,
         section: DetailSection,
-        expanded: Boolean = false,
         initialScrollIndex: Int = 0,
         initialScrollOffset: Int = 0,
     ) {
@@ -250,7 +240,6 @@ class ReferenceScreenshotTest {
                             onWatch = {},
                             detail = fixtures.detail(stock.id),
                             initialSection = section,
-                            initiallyExpanded = expanded,
                             listState = rememberLazyListState(
                                 initialFirstVisibleItemIndex = initialScrollIndex,
                                 initialFirstVisibleItemScrollOffset = initialScrollOffset,

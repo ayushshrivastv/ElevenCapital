@@ -48,4 +48,17 @@ class StockExplorerLinkTest {
             solanaTransactionSignature = null)))
         assertNull(completedPurchaseSolscanUrl(completed.copy(solanaTransactionSignature = null)))
     }
+
+    @Test
+    fun `completed purchase history links only canonical Solana signatures`() {
+        val signature = encodeBase58(ByteArray(64) { (it + 1).toByte() })
+        val url = "https://solscan.io/tx/$signature"
+        assertEquals(url, purchaseHistorySolscanUrl(signature))
+        org.junit.Assert.assertTrue(isPurchaseSolscanUrl(url))
+        assertNull(purchaseHistorySolscanUrl("0x" + "a".repeat(64)))
+        assertNull(purchaseHistorySolscanUrl("invalid"))
+        org.junit.Assert.assertFalse(isPurchaseSolscanUrl("https://solscan.io.evil.test/tx/$signature"))
+        org.junit.Assert.assertFalse(isPurchaseSolscanUrl("$url?cluster=devnet"))
+        org.junit.Assert.assertFalse(isPurchaseSolscanUrl("$url#details"))
+    }
 }

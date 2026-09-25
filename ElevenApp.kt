@@ -2,11 +2,14 @@ package com.elevencapital.app
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
 import com.elevencapital.core.stock.StockId
+import com.elevencapital.core.stock.Stock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -28,6 +31,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
@@ -49,13 +53,20 @@ import com.elevencapital.app.wallet.TransferJournalRecord
 import com.elevencapital.app.wallet.filterHomeWalletTransactions
 import com.elevencapital.app.wallet.WalletSubmission
 import com.elevencapital.app.data.WalletBalancePhase
+import com.elevencapital.app.purchase.PurchasePhase
+import com.elevencapital.app.purchase.PurchaseRouteState
 import com.elevencapital.app.data.CompletedPurchasesClient
 import com.elevencapital.app.data.CompletedPurchasesSnapshot
 import com.elevencapital.app.data.WalletTransactionsClient
 import com.elevencapital.app.data.WalletTransactionsSnapshot
+import com.elevencapital.app.data.SolanaDevnetClient
+import com.elevencapital.app.data.SolanaDevnetSnapshot
+import com.elevencapital.app.data.WalletTransaction
 import com.elevencapital.app.data.activityWallets
+import com.elevencapital.app.data.walletTransactionsFor
 import com.elevencapital.core.stock.flow.OrderSide
 import com.elevencapital.core.stock.flow.StockDestination
+import java.math.BigDecimal
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -69,6 +80,14 @@ private sealed interface VisualRoute {
     data class Wallet(val page: WalletPage) : VisualRoute
     data object TransferHistory : VisualRoute
 }
+
+private fun VisualRoute.navigationDepth(): Int = when (this) {
+    is VisualRoute.Root -> 0
+    is VisualRoute.Order -> 2
+    else -> 1
+}
+
+private data class CompletedBuyNotice(val quoteId: String, val stock: Stock, val solscanUrl: String)
 
 @Composable
 fun ElevenApp(
@@ -108,12 +127,18 @@ fun ElevenApp(
     val activityClient = remember(model.isLive) {
         if (model.isLive) WalletTransactionsClient(BuildConfig.MARKET_DATA_URL) else null
     }
+    val devnetClient = remember(model.isLive) {
+        if (model.isLive) SolanaDevnetClient(BuildConfig.MARKET_DATA_URL) else null
+    }
     val purchaseActivityClient = remember(model.isLive) {
         if (model.isLive) CompletedPurchasesClient(BuildConfig.MARKET_DATA_URL,
             (context.applicationContext as ElevenCapitalApplication).auth::freshPurchaseAccessToken) else null
     }
     var walletActivity by remember(authenticatedUser?.userId, requestedActivityWallets) {
         mutableStateOf<WalletTransactionsSnapshot?>(null)
+    }
+    var devnetActivity by remember(authenticatedUser?.userId, mainSolanaWallet?.address) {
+        mutableStateOf<SolanaDevnetSnapshot?>(null)
     }
     var purchaseActivity by remember(authenticatedUser?.userId) {
         mutableStateOf<CompletedPurchasesSnapshot?>(null)
@@ -137,6 +162,29 @@ fun ElevenApp(
                 null
             }
             if (observation?.wallets == requestedActivityWallets) walletActivity = observation
+        }
+        refresh()
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (currentCoroutineContext().isActive) {
+                delay(15_000)
+                refresh()
+            }
+        }
+    }
+    LaunchedEffect(lifecycleOwner, devnetClient, authenticatedUser?.userId,
+        mainSolanaWallet?.address, activityRefreshNonce) {
+        if (authenticatedUser?.userId == null) return@LaunchedEffect
+        val client = devnetClient ?: return@LaunchedEffect
+        val address = mainSolanaWallet?.address ?: return@LaunchedEffect
+        suspend fun refresh() {
+            val observation = try {
+                client.wallet(address)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            if (observation?.walletAddress == address) devnetActivity = observation
         }
         refresh()
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -226,6 +274,70 @@ fun ElevenApp(
     val signal by model.signal.collectAsStateWithLifecycle()
     val walletPortfolio by model.walletPortfolio.collectAsStateWithLifecycle()
     val purchaseState by model.purchaseState.collectAsStateWithLifecycle()
+    val previewUserId = authenticatedUser?.userId
+    var previewWalletState by remember(previewUserId) {
+        mutableStateOf(previewUserId?.let { PreviewWalletStore.read(context, it) } ?: PreviewWalletState())
+    }
+    var spcxxPreviewPosition by remember(previewUserId) {
+        mutableStateOf(previewUserId?.takeIf { BuildConfig.DEBUG }
+            ?.let { PreviewSpcxxHoldingStore.read(context, it) })
+    }
+    var previewProcessingStockId by remember(previewUserId) { mutableStateOf<String?>(null) }
+    var previewBuyNotice by remember(previewUserId) { mutableStateOf<Stock?>(null) }
+    LaunchedEffect(previewProcessingStockId, previewUserId) {
+        val stockId = previewProcessingStockId ?: return@LaunchedEffect
+        if (!BuildConfig.DEBUG || previewUserId == null) return@LaunchedEffect
+        delay(2_000)
+        val stock = model.repository.catalog.value.firstOrNull { it.id.value == stockId }
+        val preview = stock?.let(::previewStockPurchase)
+        val nextWallet = if (stock != null && preview != null) {
+            PreviewWalletStore.recordPurchase(context, previewUserId, stockId, stock.symbol, preview.inputUsd)
+        } else null
+        previewProcessingStockId = null
+        if (stock != null && preview != null && nextWallet != null) {
+            previewWalletState = nextWallet
+            if (stockId == SPCXX_PREVIEW_STOCK_ID) {
+                spcxxPreviewPosition = PreviewSpcxxHoldingStore.set(context, previewUserId,
+                    preview.receiveTokens, preview.receiveValueUsd)
+            }
+            previewBuyNotice = stock
+            val activeOrder = model.stockFlow.destination.value as? StockDestination.Order
+            if (activeOrder?.side == OrderSide.BUY && activeOrder.stockId.value == stockId) {
+                model.stockFlow.goBack()
+            }
+        }
+    }
+    LaunchedEffect(previewBuyNotice) {
+        val notice = previewBuyNotice ?: return@LaunchedEffect
+        delay(4_500)
+        if (previewBuyNotice == notice) previewBuyNotice = null
+    }
+    val completedBuy = purchaseState.takeIf {
+        it.side == OrderSide.BUY && it.phase == PurchasePhase.COMPLETE &&
+            it.status?.state == PurchaseRouteState.COMPLETED
+    }
+    val completedBuySolscanUrl = completedPurchaseSolscanUrl(completedBuy?.status)
+    val completedBuyQuoteId = completedBuy?.status?.quoteId?.takeIf { completedBuySolscanUrl != null }
+    var lastBuyNoticeQuoteId by remember(authenticatedUser?.userId) { mutableStateOf<String?>(null) }
+    var buyNotice by remember(authenticatedUser?.userId) { mutableStateOf<CompletedBuyNotice?>(null) }
+    LaunchedEffect(completedBuyQuoteId, stocks) {
+        val result = completedBuy ?: return@LaunchedEffect
+        val quoteId = completedBuyQuoteId ?: return@LaunchedEffect
+        val solscanUrl = completedBuySolscanUrl ?: return@LaunchedEffect
+        if (lastBuyNoticeQuoteId == quoteId) return@LaunchedEffect
+        val stock = stocks.firstOrNull { it.id.value == result.stockId } ?: return@LaunchedEffect
+        lastBuyNoticeQuoteId = quoteId
+        buyNotice = CompletedBuyNotice(quoteId, stock, solscanUrl)
+        val activeOrder = destination as? StockDestination.Order
+        if (activeOrder?.side == OrderSide.BUY && activeOrder.stockId == stock.id) {
+            model.stockFlow.goBack()
+        }
+    }
+    LaunchedEffect(buyNotice?.quoteId) {
+        val quoteId = buyNotice?.quoteId ?: return@LaunchedEffect
+        delay(4_500)
+        if (buyNotice?.quoteId == quoteId) buyNotice = null
+    }
     var walletPage by remember(authenticatedUser?.userId) { mutableStateOf<WalletPage?>(null) }
     var transferHistoryVisible by remember(authenticatedUser?.userId) { mutableStateOf(false) }
     LaunchedEffect(model, authenticatedUser?.userId, purchaseState.phase, purchaseState.quote?.id) {
@@ -252,24 +364,42 @@ fun ElevenApp(
     var marketQuery by remember(model) { mutableStateOf(MarketQuery()) }
     var watchlistOnly by remember(model) { mutableStateOf(false) }
     var marketOverlay by remember(model) { mutableStateOf<String?>(null) }
-    val rows = remember(model, stocks, watched, connection.catalog) {
-        if (model.isLive) model.liveRows(stocks, watched) else fixtures.rows(stocks, watched)
-    }
-    val signalStockIds = remember(stocks) {
-        stocks.groupBy { it.symbol.removeSuffix(".US").removeSuffix("x").uppercase() }
-            .mapValues { (_, matches) ->
-                (matches.firstOrNull { it.symbol.endsWith("x") } ?: matches.first()).id
-            }
-    }
     val holdings = remember(model, stocks, watched, walletPortfolio.holdings) {
         if (model.isLive) model.liveHoldingRows(stocks, watched) else fixtures.holdings(stocks, watched)
     }
+    val previewHoldings = remember(stocks, previewWalletState.purchases, spcxxPreviewPosition) {
+        if (BuildConfig.DEBUG) buildList {
+            previewWalletState.purchases.forEach { purchase ->
+                stocks.firstOrNull { it.id.value == purchase.stockId }?.let { stock ->
+                    previewStockPurchase(stock)?.let { details ->
+                        add(PreviewStockHolding(stock, details.receiveTokens, details.receiveValueUsd))
+                    }
+                }
+            }
+            if (none { it.stock.id.value == SPCXX_PREVIEW_STOCK_ID }) {
+                spcxxPreviewPosition?.let { position ->
+                    stocks.firstOrNull { it.id.value == SPCXX_PREVIEW_STOCK_ID }?.let { stock ->
+                        add(PreviewStockHolding(stock, position.quantity, position.valueUsd))
+                    }
+                }
+            }
+        } else emptyList()
+    }
+    val previewHoldingUsd = previewHoldings.fold(BigDecimal.ZERO) { total, holding -> total + holding.valueUsd }
     val accountNotice = when {
         authenticatedUser?.walletsReady != true -> walletNotice
         walletPortfolio.phase == WalletBalancePhase.PARTIAL ||
             walletPortfolio.phase == WalletBalancePhase.UNAVAILABLE -> walletPortfolio.notice
         else -> ""
     }
+    val visibleWalletTransactions: List<WalletTransaction> = remember(
+        walletActivity, requestedActivityWallets, devnetActivity, mainSolanaWallet?.address,
+    ) {
+        walletActivity?.takeIf { it.wallets == requestedActivityWallets }?.transactions.orEmpty() +
+            devnetActivity?.walletTransactionsFor(mainSolanaWallet?.address).orEmpty()
+    }
+    val visibleDevnetSol = devnetActivity?.takeIf { it.walletAddress == mainSolanaWallet?.address }
+        ?.balanceSol
 
     BackHandler(walletPage != null) { walletPage = null }
     BackHandler(walletPage == null && transferHistoryVisible) { transferHistoryVisible = false }
@@ -291,12 +421,11 @@ fun ElevenApp(
                 modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
                 contentKey = { if (it is VisualRoute.Root) "root" else it },
                 transitionSpec = {
-                    val forward = targetState !is VisualRoute.Root
-                    slideInHorizontally(tween(ReferenceMotion.RouteMillis, easing = ReferenceMotion.Easing)) {
-                        if (forward) it else -it / 3
-                    } togetherWith slideOutHorizontally(tween(ReferenceMotion.RouteMillis, easing = ReferenceMotion.Easing)) {
-                        if (forward) -it / 3 else it
-                    }
+                    val direction = if (targetState.navigationDepth() < initialState.navigationDepth()) -1 else 1
+                    val motion = tween<IntOffset>(ReferenceMotion.RouteMillis, easing = ReferenceMotion.Easing)
+                    val opacity = tween<Float>(ReferenceMotion.RouteMillis, easing = ReferenceMotion.Easing)
+                    (slideInHorizontally(motion) { direction * it / 4 } + fadeIn(opacity)) togetherWith
+                        (slideOutHorizontally(motion) { -direction * it / 4 } + fadeOut(opacity))
                 },
                 label = "reference-screen-route",
             ) { visible ->
@@ -306,14 +435,26 @@ fun ElevenApp(
                         VisualRoute.TransferHistory -> TransferHistoryScreen(
                             verifiedUserId = authenticatedUser?.userId.orEmpty(),
                             records = transferHistory,
-                            walletTransactions = walletActivity
-                                ?.takeIf { it.wallets == requestedActivityWallets }
-                                ?.transactions.orEmpty(),
+                            walletTransactions = visibleWalletTransactions,
                             purchaseTransactions = purchaseActivity?.transactions.orEmpty(),
                             walletActivityStatus = walletActivity?.status,
                             stockSymbols = stocks.associate { it.id.value to it.symbol },
                             storageHealthy = transferHistoryStorageHealthy,
                             onBack = { transferHistoryVisible = false },
+                            previewSpcxxPosition = spcxxPreviewPosition,
+                            // This is the user's older SPCXx swap, not a signature created by the local UI rehearsal.
+                            onPreviewSpcxxTransaction = {
+                                openPurchaseSolscan(context, SPCXX_PREVIEW_TRANSACTION)
+                            },
+                            previewWalletState = previewWalletState,
+                            onPreviewPurchaseTransaction = { purchase ->
+                                val historicalUrl = when (purchase.stockId) {
+                                    SPCXX_PREVIEW_STOCK_ID -> SPCXX_PREVIEW_TRANSACTION
+                                    NIKE_PREVIEW_STOCK_ID -> NIKE_PREVIEW_TRANSACTION
+                                    else -> null
+                                }
+                                historicalUrl?.let { openPurchaseSolscan(context, it) }
+                            },
                         )
                         is VisualRoute.Wallet -> when (visible.page) {
                             WalletPage.RECEIVE -> ReceiveWalletScreen(
@@ -344,18 +485,24 @@ fun ElevenApp(
                                 chartMessage = if (model.isLive) connection.chartMessages[selected.id to selectedRange]
                                     ?: if (selected.charts[selectedRange].isNullOrEmpty()) "Loading price history…" else null
                                     else null,
+                                chartContext = if (model.isLive) connection.chartContexts[selected.id to selectedRange] else null,
                                 useQuoteChangeForAllRanges = !model.isLive,
                                 onExit = { model.clearActiveChart(selected.id) },
                             )
                         }
                         is VisualRoute.Order -> stocks.firstOrNull { it.id == visible.stockId }?.let { selected ->
+                            val previewPurchase = selected.takeIf { visible.side == OrderSide.BUY }
+                                ?.let(::previewStockPurchase)
+                            val previewBuy = previewPurchase != null
                             VisibleMarketInterest(model, "order", setOf(selected.id))
-                            LaunchedEffect(model, selected.id, visible.side, authenticatedUser?.userId,
-                                authenticatedUser?.walletsReady) {
-                                model.bindPurchase(selected.takeIf { model.isLive }, visible.side)
-                            }
-                            DisposableEffect(model, selected.id, visible.side) {
-                                onDispose { model.bindPurchase(null, visible.side) }
+                            if (!previewBuy) {
+                                LaunchedEffect(model, selected.id, visible.side, authenticatedUser?.userId,
+                                    authenticatedUser?.walletsReady) {
+                                    model.bindPurchase(selected.takeIf { model.isLive }, visible.side)
+                                }
+                                DisposableEffect(model, selected.id, visible.side) {
+                                    onDispose { model.bindPurchase(null, visible.side) }
+                                }
                             }
                             TradeScreen(
                                 stock = selected,
@@ -365,14 +512,28 @@ fun ElevenApp(
                                 onChooseStock = {},
                                 stockLogoReference = if (model.isLive) selected.logo else fixtures.detail(selected.id).headerLogo,
                                 stockBalance = holdings.firstOrNull { it.stock.id == selected.id }?.quantity,
-                                unavailableReason = if (model.isLive && authenticatedUser?.walletsReady != true) walletNotice else null,
-                                purchaseState = purchaseState.takeIf { model.isLive && it.side == visible.side },
-                                onSelectPaymentAsset = model::selectPurchasePaymentAsset,
-                                onSelectDestination = model::selectPurchaseDestination,
-                                onRequestQuote = model::requestPurchaseQuote,
-                                onExecutePurchase = model::executePurchase,
-                                onEditQuote = model::editPurchaseQuote,
-                                onRefreshPurchase = model::refreshPurchaseOptions,
+                                unavailableReason = if (!previewBuy && model.isLive && authenticatedUser?.walletsReady != true)
+                                    walletNotice else null,
+                                purchaseState = if (previewBuy) previewStockTradeState(
+                                    selected, previewWalletState.availableSol, previewWalletState.availableUsd)
+                                    else purchaseState.takeIf { model.isLive && it.side == visible.side },
+                                onSelectPaymentAsset = if (previewBuy) ({}) else model::selectPurchasePaymentAsset,
+                                onSelectDestination = if (previewBuy) ({}) else model::selectPurchaseDestination,
+                                onRequestQuote = if (previewBuy) ({}) else model::requestPurchaseQuote,
+                                onPurchaseNow = if (previewBuy) ({}) else model::purchaseNow,
+                                onExecutePurchase = if (previewBuy) ({}) else model::executePurchase,
+                                onEditQuote = if (previewBuy) ({}) else model::editPurchaseQuote,
+                                onRefreshPurchase = if (previewBuy) ({}) else model::refreshPurchaseOptions,
+                                preview = if (previewBuy) previewStockTrade(selected,
+                                    previewWalletState.availableSol,
+                                    previewProcessingStockId == selected.id.value) else null,
+                                onPreviewPurchase = {
+                                    if (previewBuy && previewProcessingStockId == null &&
+                                        previewWalletState.funded &&
+                                        previewWalletState.availableUsd >= requireNotNull(previewPurchase).inputUsd) {
+                                        previewProcessingStockId = selected.id.value
+                                    }
+                                },
                             )
                         }
                         is VisualRoute.Root -> {
@@ -415,10 +576,27 @@ fun ElevenApp(
                                                 transactions = filterHomeWalletTransactions(transferHistory,
                                                     authenticatedUser?.userId,
                                                     verifiedWallets),
-                                                walletTransactions = walletActivity
-                                                    ?.takeIf { it.wallets == requestedActivityWallets }
-                                                    ?.transactions.orEmpty(),
+                                                walletTransactions = visibleWalletTransactions,
                                                 purchaseTransactions = purchaseActivity?.transactions.orEmpty(),
+                                                previewSpcxxPosition = spcxxPreviewPosition,
+                                                onPreviewSpcxxTransaction = {
+                                                    openPurchaseSolscan(context, SPCXX_PREVIEW_TRANSACTION)
+                                                },
+                                                previewWalletState = previewWalletState,
+                                                onRefreshTransactions = {
+                                                    previewUserId?.let { userId ->
+                                                        previewWalletState = PreviewWalletStore.refresh(context, userId)
+                                                    }
+                                                    activityRefreshNonce++
+                                                },
+                                                onPreviewPurchaseTransaction = { purchase ->
+                                                    val historicalUrl = when (purchase.stockId) {
+                                                        SPCXX_PREVIEW_STOCK_ID -> SPCXX_PREVIEW_TRANSACTION
+                                                        NIKE_PREVIEW_STOCK_ID -> NIKE_PREVIEW_TRANSACTION
+                                                        else -> null
+                                                    }
+                                                    historicalUrl?.let { openPurchaseSolscan(context, it) }
+                                                },
                                                 walletActivityStatus = walletActivity?.status,
                                                 stockSymbols = stocks.associate { it.id.value to it.symbol },
                                                 unitPricesUsd = walletPortfolio.tokenHoldings.mapNotNull { token ->
@@ -434,45 +612,96 @@ fun ElevenApp(
                                                 showTopPanel = false,
                                             )
                                         }
-                                        RootTab.Markets -> MarketsScreen(rows, model::openStock, model::toggleWatch,
-                                            onFilter = { marketOverlay = "filters" },
-                                            statusMessage = when {
-                                                !model.isLive -> null
-                                                connection.catalog == null && !connection.offline && !connection.refreshFailed -> ""
-                                                else -> connection.message
-                                            },
-                                            onRetry = null,
-                                            query = marketQuery, watchlistOnly = watchlistOnly,
-                                            onQueryChange = { marketQuery = it },
-                                            onVisibleStockIds = model::setVisibleStockIds)
-                                        RootTab.Trade -> SignalScreen(
-                                            profiles = signal.profiles,
-                                            selectedProfileId = signal.selectedProfileId,
-                                            trades = signal.trades,
-                                            news = signal.news,
-                                            bargoTrades = signal.tradeSource ==
-                                                com.elevencapital.app.data.SignalTradeSource.BARGO,
-                                            onProfile = model::openSignalProfile,
-                                            onBack = model::closeSignalProfile,
-                                            onOpenLink = { url ->
-                                                if (url.startsWith("https://")) runCatching {
-                                                    context.startActivity(android.content.Intent(
-                                                        android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
-                                                }
-                                            },
-                                            notice = signal.notice,
-                                            onRefresh = { model.refreshSignalDirectory(force = true)
-                                                signal.selectedProfileId?.let(model::openSignalProfile) },
-                                            canExploreStock = { symbol -> symbol.uppercase() in signalStockIds },
-                                            onExploreStock = { symbol -> signalStockIds[symbol.uppercase()]?.let(model::openStock) },
-                                        )
+                                        RootTab.Markets -> {
+                                            // Only derive the full market table while its tab is on screen.
+                                            val rows = remember(model, stocks, watched, connection.catalog) {
+                                                if (model.isLive) model.liveRows(stocks, watched)
+                                                else fixtures.rows(stocks, watched)
+                                            }
+                                            MarketsScreen(rows, model::openStock, model::toggleWatch,
+                                                onFilter = { marketOverlay = "filters" },
+                                                statusMessage = when {
+                                                    !model.isLive -> null
+                                                    connection.catalog == null && !connection.offline && !connection.refreshFailed -> ""
+                                                    else -> connection.message
+                                                },
+                                                onRetry = null,
+                                                query = marketQuery, watchlistOnly = watchlistOnly,
+                                                onQueryChange = { marketQuery = it },
+                                                onVisibleStockIds = model::setVisibleStockIds)
+                                        }
+                                        RootTab.Trade -> {
+                                            val signalStockIds = remember(stocks) {
+                                                stocks.groupBy { it.symbol.removeSuffix(".US").removeSuffix("x").uppercase() }
+                                                    .mapValues { (_, matches) ->
+                                                        (matches.firstOrNull { it.symbol.endsWith("x") } ?: matches.first()).id
+                                                    }
+                                            }
+                                            SignalScreen(
+                                                profiles = signal.profiles,
+                                                selectedProfileId = signal.selectedProfileId,
+                                                trades = signal.trades,
+                                                news = signal.news,
+                                                bargoTrades = signal.tradeSource ==
+                                                    com.elevencapital.app.data.SignalTradeSource.BARGO,
+                                                onProfile = model::openSignalProfile,
+                                                onBack = model::closeSignalProfile,
+                                                onOpenLink = { url ->
+                                                    if (url.startsWith("https://")) runCatching {
+                                                        context.startActivity(android.content.Intent(
+                                                            android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                                                    }
+                                                },
+                                                notice = signal.notice,
+                                                onRefresh = { model.refreshSignalDirectory(force = true)
+                                                    signal.selectedProfileId?.let(model::openSignalProfile) },
+                                                canExploreStock = { symbol -> symbol.uppercase() in signalStockIds },
+                                                onExploreStock = { symbol -> signalStockIds[symbol.uppercase()]?.let(model::openStock) },
+                                            )
+                                        }
                                         RootTab.Account -> {
+                                            val liveBalance = if (model.isLive) walletPortfolio.balanceUsd else portfolio.balance
                                             VisibleMarketInterest(model, "account", holdings.map { it.stock.id }.toSet())
+                                            val hasPreviewBalance = BuildConfig.DEBUG &&
+                                                (previewWalletState.funded || previewHoldings.isNotEmpty())
                                             AccountScreen(
-                                                balance = if (model.isLive) walletPortfolio.balanceUsd else portfolio.balance,
+                                                balance = if (hasPreviewBalance) (liveBalance ?: BigDecimal.ZERO)
+                                                    .add(previewWalletState.availableUsd).add(previewHoldingUsd)
+                                                else liveBalance,
                                                 tokenHoldings = if (model.isLive) walletPortfolio.tokenHoldings else emptyList(),
+                                                previewHoldings = previewHoldings,
+                                                onPreviewOpenTransaction = { holding ->
+                                                    previewStockPurchase(holding.stock)?.transactionUrl
+                                                        ?.let { openPurchaseSolscan(context, it) }
+                                                },
+                                                onPreviewRemoveAll = {
+                                                    previewUserId?.let { userId ->
+                                                        previewWalletState = PreviewWalletStore.clear(context, userId)
+                                                        PreviewSpcxxHoldingStore.remove(context, userId)
+                                                        spcxxPreviewPosition = null
+                                                        previewBuyNotice = null
+                                                    }
+                                                },
+                                                previewSolBalance = previewWalletState.availableSol
+                                                    .takeIf { previewWalletState.funded },
+                                                previewSolValueUsd = previewWalletState.availableUsd
+                                                    .takeIf { previewWalletState.funded },
+                                                onPreviewSolRemove = {
+                                                    previewUserId?.let { userId ->
+                                                        previewWalletState = PreviewWalletStore.removeFunding(context, userId)
+                                                    }
+                                                },
+                                                devnetSol = if (model.isLive) visibleDevnetSol else null,
                                                 holdings = holdings,
                                                 onStock = model::openStock,
+                                                onToken = { token ->
+                                                    portfolioTokenSolscanUrl(token, mainSolanaWallet?.address)
+                                                        ?.let { openPortfolioSolscan(context, it) }
+                                                },
+                                                onDevnetSol = {
+                                                    devnetSolSolscanUrl(mainSolanaWallet?.address)
+                                                        ?.let { openPortfolioSolscan(context, it) }
+                                                },
                                                 accountNotice = if (model.isLive) accountNotice else null,
                                                 balancePlaceholder = if (model.isLive) walletPortfolio.balancePlaceholder else "—",
                                                 portfolioPhase = if (model.isLive) walletPortfolio.phase else WalletBalancePhase.READY,
@@ -495,6 +724,23 @@ fun ElevenApp(
                     watchlistOnly = watchlistOnly,
                     onWatchlistOnlyChange = { watchlistOnly = it },
                     onDismiss = { marketOverlay = null })
+            }
+            buyNotice?.let { notice ->
+                StockBuySuccessNotice(
+                    stock = notice.stock,
+                    solscanUrl = notice.solscanUrl,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                        .windowInsetsPadding(WindowInsets.statusBars)
+                        .padding(top = rd(9f)),
+                )
+            }
+            previewBuyNotice?.let { stock ->
+                StockBuySuccessNotice(
+                    stock = stock,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                        .windowInsetsPadding(WindowInsets.statusBars)
+                        .padding(top = rd(9f)),
+                )
             }
         }
     }

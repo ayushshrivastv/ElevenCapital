@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.layout.ContentScale
@@ -93,7 +94,28 @@ fun SquareLogo(size: Float, alpha: Float = 1f) {
     BrandLogo(Modifier.size(rd(size)), alpha)
 }
 
-/** Stock artwork is data-selected; there is no stock-specific layout branch. */
+/** The same monochrome Solana mark is used for wallet assets and payment networks. */
+@Composable
+fun SolanaLogo(size: Float, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(rd(size))) { drawSolanaLogo() }
+}
+
+fun DrawScope.drawSolanaLogo() {
+    val side = size.minDimension
+    drawCircle(Color.Black, side / 2f, Offset(size.width / 2f, size.height / 2f))
+    fun bar(points: List<Pair<Float, Float>>) {
+        drawPath(Path().apply {
+            moveTo(side * points[0].first, side * points[0].second)
+            points.drop(1).forEach { (x, y) -> lineTo(side * x, side * y) }
+            close()
+        }, Color.White)
+    }
+    bar(listOf(.29f to .23f, .79f to .23f, .69f to .35f, .19f to .35f))
+    bar(listOf(.19f to .44f, .69f to .44f, .79f to .56f, .29f to .56f))
+    bar(listOf(.29f to .65f, .79f to .65f, .69f to .77f, .19f to .77f))
+}
+
+/** Stocks and portfolio positions resolve the same bundled provider marks when available. */
 @Composable
 fun StockIcon(
     stock: Stock,
@@ -103,8 +125,15 @@ fun StockIcon(
 ) {
     val context = LocalContext.current
     val reference = logoReference?.value
-    val resource = remember(reference) {
-        if (reference?.startsWith("reference/") == true) {
+    // These are byte-for-byte copies of the catalog's logo URLs. Bundling them keeps the
+    // market row, buy screen, and portfolio row identical when remote artwork is unavailable.
+    val providerResource = when (stock.id.value) {
+        "backpack:NKE.US" -> R.drawable.stock_nke_provider
+        "backed:eba060bd-f7b3-49e3-8ef1-99869351b434" -> R.drawable.stock_spcxx_provider
+        else -> 0
+    }
+    val resource = remember(reference, providerResource) {
+        if (providerResource != 0) providerResource else if (reference?.startsWith("reference/") == true) {
             val name = "stock_" + reference.removePrefix("reference/").replace('/', '_')
             context.resources.getIdentifier(name, "drawable", context.packageName)
         } else 0
@@ -118,11 +147,20 @@ fun StockIcon(
     Box(modifier.size(rd(size)), contentAlignment = Alignment.Center) {
         if (resource != 0) {
             val painter = painterResource(resource)
-            // Source table crops include the small provider badge beyond the 84px logo.
-            val extent = if (reference?.endsWith("/detail") == true) 1f else
+            // Oversized bundled table artwork includes a provider badge outside the
+            // 84px company mark. Smaller standalone marks are displayed whole.
+            val extent = if (providerResource != 0 || reference?.endsWith("/detail") == true ||
+                reference?.endsWith("/standalone") == true ||
+                painter.intrinsicSize.width <= 84f) 1f else
                 painter.intrinsicSize.width / 84f
-            Image(painter, stock.name,
-                Modifier.wrapContentSize(Alignment.TopStart, unbounded = true).size(rd(size * extent)))
+            Box(Modifier.size(rd(size)).clip(CircleShape)
+                .background(if (providerResource != 0) Color.Black else Color.Transparent),
+                contentAlignment = Alignment.TopStart) {
+                Image(painter, stock.name,
+                    Modifier.wrapContentSize(Alignment.TopStart, unbounded = true)
+                        .size(rd(size * extent)),
+                    contentScale = ContentScale.FillBounds)
+            }
         } else if (reference?.startsWith("https://") == true) {
             // Loading/error states use the monogram. A successful image replaces it,
             // so transparent company artwork cannot reveal duplicate ticker letters.

@@ -28,8 +28,12 @@ internal fun exactStockExplorerLink(network: String?, address: String?): StockEx
 internal fun completedPurchaseSolscanUrl(status: PurchaseStatus?): String? {
     if (status?.state != PurchaseRouteState.COMPLETED) return null
     val signature = status.solanaTransactionSignature ?: return null
-    return if (isCanonicalSolanaSignature(signature)) "https://solscan.io/tx/$signature" else null
+    return purchaseHistorySolscanUrl(signature)
 }
+
+/** A completed history row can link only its verified Solana transaction, never an EVM deposit. */
+internal fun purchaseHistorySolscanUrl(transactionId: String?): String? =
+    transactionId?.takeIf(::isCanonicalSolanaSignature)?.let { "https://solscan.io/tx/$it" }
 
 /** Defense in depth before handing a provider-owned page to the platform URI handler. */
 internal fun safeStockInformationUrl(value: String?): String? {
