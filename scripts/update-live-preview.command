@@ -8,10 +8,13 @@ project_dir="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
 function eleven_update_main() {
 # User-run completion path: run from Terminal outside an agent's restricted sandbox.
 finish_only=0
+verify_all=0
 if [[ "${1:-}" == --finish-only && $# == 1 ]]; then
   finish_only=1
+elif [[ "${1:-}" == --verify && $# == 1 ]]; then
+  verify_all=1
 elif (( $# > 0 )); then
-  print 'Usage: update-live-preview.command [--finish-only]'
+  print 'Usage: update-live-preview.command [--verify | --finish-only]'
   return 2
 fi
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -45,19 +48,22 @@ if (( ! finish_only )) && { [[ -z "${JAVA_HOME:-}" ]] || ! "$JAVA_HOME/bin/java"
 fi
 
 if (( ! finish_only )); then
-print 'Checking the backend and preview controller…'
+print 'Building the backend…'
 cd -- "$project_dir/backend"
 if [[ ! -d node_modules ]]; then npm ci; fi
-npm run check
+npm run build
+if (( verify_all )); then npm test; fi
 cd -- "$project_dir"
-"$node_bin" --test scripts/adb-manager.test.mjs scripts/preview-service.test.mjs
+if (( verify_all )); then
+  "$node_bin" --test scripts/adb-manager.test.mjs scripts/preview-service.test.mjs
+fi
 
-print 'Building and verifying the Android APK…'
+print 'Building the Android APK with one worker…'
+if (( verify_all )); then
 ./gradlew -PandroidBuild=true -PmarketDataUrl=http://127.0.0.1:8787 \
+  :market-data:testDebugUnitTest \
   :core:test :app:testDebugUnitTest \
   --tests com.elevencapital.app.LiveMarketDataParserTest \
-  --tests com.elevencapital.app.LiveMarketStreamTest \
-  --tests com.elevencapital.app.OrderedMarketCatalogTest \
   --tests com.elevencapital.app.MarketChartObservationTest \
   --tests com.elevencapital.app.MarketQueryTest \
   --tests 'com.elevencapital.app.LiveWalletPortfolio*' \
@@ -65,7 +71,11 @@ print 'Building and verifying the Android APK…'
   --tests 'com.elevencapital.app.auth.*' \
   --tests 'com.elevencapital.app.purchase.*' \
   --tests 'com.elevencapital.app.wallet.*' \
-  :app:assembleDebug :app:lintDebug --console=plain --max-workers=1
+  :app:assembleDebug :app:lintDebug --console=plain --no-daemon --max-workers=1
+else
+  ./gradlew -PandroidBuild=true -PmarketDataUrl=http://127.0.0.1:8787 \
+    :app:assembleDebug --console=plain --no-daemon --max-workers=1
+fi
 else
   print 'Finishing backup and cleanup for an already-installed build; no build or backend restart.'
 fi
@@ -83,9 +93,10 @@ if [[ "$expected_package" != com.elevencapital.app || "$expected_version" != <->
   exit 1
 fi
 
-print 'Verifying the authorized S22 and its USB reverse route…'
+print 'Verifying the authorized S22 and its reverse route…'
 selected_device="${ELEVEN_ANDROID_SERIAL:-RZCW92MJRCT}"
-"$node_bin" "$adb_manager" wait "$adb_bin" "$selected_device"
+selected_transport="$("$node_bin" "$adb_manager" transport "$adb_bin" "$selected_device")"
+print "S22 connected: $selected_transport"
 
 previous_server_remains=0
 if (( ! finish_only )); then
@@ -133,26 +144,22 @@ if ! "$node_bin" "$manager" verify-catalog "$project_dir"; then
 fi
 # Re-read the exact mapping after backend startup. Success is withheld when ADB
 # drops the route or another process replaces it.
-"$node_bin" "$adb_manager" wait "$adb_bin" "$selected_device"
-print "Installing on authorized USB phone: $selected_device"
-"$adb_bin" -s "$selected_device" install -r "$apk_source"
+selected_transport="$("$node_bin" "$adb_manager" transport "$adb_bin" "$selected_device")"
+print "Installing on S22: $selected_transport"
+"$adb_bin" -s "$selected_transport" install -r "$apk_source"
 fi
-installed_version="$("$adb_bin" -s "$selected_device" shell dumpsys package com.elevencapital.app | awk '{ for (i=1; i<=NF; i++) if ($i ~ /^versionCode=/) { sub(/^versionCode=/, "", $i); print $i; exit } }')"
+installed_version="$("$adb_bin" -s "$selected_transport" shell dumpsys package com.elevencapital.app | awk '{ for (i=1; i<=NF; i++) if ($i ~ /^versionCode=/) { sub(/^versionCode=/, "", $i); print $i; exit } }')"
 if [[ "$installed_version" != "$expected_version" ]]; then
   print 'The installed version does not match the verified local APK. Backup and cleanup were not attempted; rerun without --finish-only to update the phone.'
   exit 1
 fi
-"$adb_bin" -s "$selected_device" shell am start -W -n com.elevencapital.app/.MainActivity
-if [[ -z "$("$adb_bin" -s "$selected_device" shell pidof com.elevencapital.app)" ]]; then
+"$adb_bin" -s "$selected_transport" shell am start -W -n com.elevencapital.app/.MainActivity
+if [[ -z "$("$adb_bin" -s "$selected_transport" shell pidof com.elevencapital.app)" ]]; then
   print 'The updated app did not stay running. Older APKs have been kept.'
   exit 1
 fi
 "$node_bin" "$manager" status "$project_dir"
-apk_destination="$project_dir/Eleven-Capital-purchase-preview-debug.apk"
-if [[ -e "$apk_destination" ]]; then
-  apk_destination="$project_dir/Eleven-Capital-purchase-preview-debug-$(date +%Y%m%d-%H%M%S)-$$.apk"
-fi
-cp -- "$apk_source" "$apk_destination"
+apk_destination="$(python3 "$project_dir/scripts/archive_apk.py" "$apk_source" --archive-dir "$project_dir/Apk build")"
 print "Verified build saved to: $apk_destination"
 downloads_dir="$HOME/Downloads/eleven capital"
 downloads_apk="$apk_destination"
@@ -166,16 +173,13 @@ if [[ "$project_dir" != "$downloads_dir" ]]; then
     --exclude='dist/' --exclude='local.properties' --exclude='.env' --exclude='.env.*' \
     --exclude='backend/runtime/private-transfer-intents.json' --exclude='backend/runtime/private-transfer-intents.json.tmp-*' \
     --exclude='backend/runtime/private-purchase-intents.json' --exclude='backend/runtime/private-purchase-intents.json.tmp-*' \
-    --exclude='.preview-service/' --exclude='direct-check/' --exclude='*.apk' \
+    --exclude='.preview-service/' --exclude='direct-check/' --exclude='*.apk' --exclude='/Apk build/' \
     "$project_dir/" "$downloads_dir/"
-  downloads_apk="$downloads_dir/$(basename -- "$apk_destination")"
-  if [[ -e "$downloads_apk" ]]; then
-    downloads_apk="$downloads_dir/Eleven-Capital-purchase-preview-debug-$(date +%Y%m%d-%H%M%S)-$$.apk"
-  fi
-  cp -- "$apk_destination" "$downloads_apk"
+  downloads_apk="$(python3 "$project_dir/scripts/archive_apk.py" "$apk_destination" --archive-dir "$downloads_dir/Apk build")"
 fi
 # User requested old build cleanup. Restrict removal to this app's older APKs
 # directly in the two project folders, after verified installation and backup.
+# Numbered APK history stays in Apk build until the user chooses to remove it.
 # Never uninstall the package or clear app data; install -r replaces it in place.
 for cleanup_dir in "$project_dir" "$downloads_dir"; do
   for old_apk in "$cleanup_dir"/Eleven-Capital*.apk(N.); do
@@ -197,10 +201,10 @@ if (( finish_only )); then
   print 'Installed version verified, source and APK saved, older app APKs removed, and Eleven Capital opened.'
   print 'Backend and wallet health were not rechecked by --finish-only.'
 else
-  print 'Updated APK installed, backend health, streaming and wallet route verified, USB forwarding ready, and Eleven Capital opened.'
+  print 'Updated APK installed, backend health, streaming and wallet route verified, forwarding ready, and Eleven Capital opened.'
 fi
 print 'Wallet values are read automatically when the signed-in app is visible; upstream RPC/price availability is checked then.'
-print 'Keep the Mac awake and USB connected. The preview job continues after this Terminal window closes.'
+print 'Keep the Mac awake and the S22 connected by USB or wireless debugging. The preview job continues after this Terminal window closes.'
 
 }
 eleven_update_main "$@"

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ class InstallerTest(unittest.TestCase):
         commands = root / "commands.jsonl"
         for directory in (script.parent, apk.parent, downloads, tools):
             directory.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(__file__).with_name("archive_apk.py"), script.parent / "archive_apk.py")
         metadata = lambda version, package="com.elevencapital.app": json.dumps(dict(version=version, package=package))
         apk.write_text(metadata(8))
         for directory in (project, downloads):
@@ -88,7 +90,7 @@ console.log('Fixture service status only');
 import { appendFileSync, writeFileSync } from 'node:fs';
 appendFileSync(''' + json.dumps(str(commands)) + ''', JSON.stringify(['adb-manager', ...process.argv.slice(2)]) + '\\n');
 if (''' + json.dumps(edit) + ''') writeFileSync(''' + json.dumps(str(script)) + ''', '#!/bin/zsh\\nfi\\ninvalid edited body\\n');
-console.log('ADB ready: S22 RZCW92MJRCT is connected by USB; tcp:8787 -> tcp:8787 verified.');
+console.log(process.argv[2] === 'transport' ? 'RZCW92MJRCT' : 'ADB ready: S22 RZCW92MJRCT is connected by USB; tcp:8787 -> tcp:8787 verified.');
 ''')
         # Redirect only the fixture copy's paths. Never repurpose HOME or touch real tools.
         replacements = {
@@ -124,7 +126,7 @@ console.log('ADB ready: S22 RZCW92MJRCT is connected by USB; tcp:8787 -> tcp:878
                 self.assertTrue((directory / name).exists(), name)
             self.assertTrue((directory / "Eleven-Capital-link.apk").is_symlink())
             self.assertEqual((directory / "local.properties").read_text(), "private local config")
-            self.assertEqual(json.loads((directory / "Eleven-Capital-market-debug.apk").read_text())["version"], 8)
+            self.assertEqual(json.loads((directory / "Apk build/Apk 1.apk").read_text())["version"], 8)
         self.assertEqual((downloads / "README.md").read_text(), "current source")
         operations = [json.loads(line) for line in commands.read_text().splitlines()]
         self.assertFalse(any("install" in args or "stop" in args for args in operations))
@@ -137,6 +139,23 @@ console.log('ADB ready: S22 RZCW92MJRCT is connected by USB; tcp:8787 -> tcp:878
         self.assertTrue((project / "Eleven-Capital-old.apk").exists())
         self.assertFalse((downloads / "README.md").exists())
         self.assertNotIn('"am"', commands.read_text())
+
+    def test_archives_keep_independent_counters_and_deduplicate_repeated_saves(self):
+        project, downloads, script, _ = self.fixture()
+        for directory, number in ((project, 9), (downloads, 15)):
+            archive = directory / "Apk build"
+            archive.mkdir()
+            (archive / ".last-build-number").write_text(str(number))
+            (archive / f"Apk {number}.apk").write_text("previous build")
+        for _ in range(2):
+            result = self.run_script(script)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for directory, number in ((project, 10), (downloads, 16)):
+            archive = directory / "Apk build"
+            self.assertEqual(sorted(path.name for path in archive.glob("*.apk")),
+                             sorted((f"Apk {number - 1}.apk", f"Apk {number}.apk")))
+            self.assertEqual((archive / ".last-build-number").read_text().strip(), str(number))
+            self.assertEqual(json.loads((archive / f"Apk {number}.apk").read_text())["version"], 8)
 
     def test_app_not_running_preserves_backups(self):
         project, downloads, script, _ = self.fixture(running=False)

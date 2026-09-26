@@ -368,12 +368,12 @@ export function formatAdbError(error) {
 export async function main(args, { manager, print = console.log, printError = console.error } = {}) {
   const [action, adb, suppliedSerial, ...extra] = args;
   try {
-    if (!['check', 'wait', 'repair'].includes(action) || !adb || extra.length) {
-      throw new AdbManagerError('usage', 'Usage: node scripts/adb-manager.mjs check|wait|repair <absolute-adb-path> [serial]');
+    if (!['check', 'wait', 'repair', 'transport'].includes(action) || !adb || extra.length) {
+      throw new AdbManagerError('usage', 'Usage: node scripts/adb-manager.mjs check|wait|repair|transport <absolute-adb-path> [serial]');
     }
     const activeManager = manager ?? createAdbManager({ serial: suppliedSerial || DEFAULT_S22_SERIAL });
-    const result = await activeManager[action](adb);
-    print(formatAdbResult(result));
+    const result = await activeManager[action === 'transport' ? 'wait' : action](adb);
+    print(action === 'transport' ? result.serial : formatAdbResult(result));
     return result;
   } catch (error) {
     printError(formatAdbError(error));

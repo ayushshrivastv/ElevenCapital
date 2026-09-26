@@ -315,5 +315,12 @@ test('manager errors retain stable codes for shell integration', () => {
 test('CLI validation prints the exact supported invocation', async () => {
   const errors = [];
   await assert.rejects(main([], { printError: message => errors.push(message) }), error => error.code === 'usage');
-  assert.deepEqual(errors, ['Usage: node scripts/adb-manager.mjs check|wait|repair <absolute-adb-path> [serial]']);
+  assert.deepEqual(errors, ['Usage: node scripts/adb-manager.mjs check|wait|repair|transport <absolute-adb-path> [serial]']);
+});
+
+test('transport command returns only the verified wireless target for APK installation', async () => {
+  const { manager } = wirelessFixture();
+  const output = [];
+  await main(['transport', adb, serial], { manager, print: value => output.push(value) });
+  assert.deepEqual(output, [mdns]);
 });

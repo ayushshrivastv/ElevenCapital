@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
 import { appendBoundedLog, authorizedDevices, createSupervisor, isElevenHealth, reverseTarget, selectUsbDevice, serviceLabel, verifyMarketStream, validateWalletCompatibilityResponse,
-  validateTransferAuthCompatibilityResponse, readPrivyPublicEnvironment } from './preview-service.mjs';
+  validateTransferAuthCompatibilityResponse, validateTokenMetadataAuthCompatibilityResponse,
+  verifyTokenMetadataAuthEndpoint, readPrivyPublicEnvironment } from './preview-service.mjs';
 
 test('wallet compatibility accepts validation and rejects old or broken backends', () => {
   assert.doesNotThrow(() => validateWalletCompatibilityResponse(400, '{"error":"invalid_request"}'));
@@ -18,6 +19,14 @@ test('transfer compatibility requires bearer authentication before any RPC work'
   assert.doesNotThrow(() => validateTransferAuthCompatibilityResponse(401, '{"error":"authentication_required"}'));
   for (const [status, body] of [[200, '{}'], [400, '{"error":"invalid_request"}'], [503, '{"error":"authentication_unavailable"}'], [401, '{"error":"other"}']]) {
     assert.throws(() => validateTransferAuthCompatibilityResponse(status, body));
+  }
+});
+
+test('token metadata compatibility requires bearer authentication before publication', () => {
+  assert.doesNotThrow(() => validateTokenMetadataAuthCompatibilityResponse(401, '{"error":"authentication_required"}'));
+  for (const [status, body] of [[200, '{}'], [400, '{"error":"invalid_request"}'], [404, '{"error":"not_found"}'],
+    [503, '{"error":"authentication_unavailable"}'], [401, '{"error":"other"}'], [401, 'not-json']]) {
+    assert.throws(() => validateTokenMetadataAuthCompatibilityResponse(status, body));
   }
 });
 
@@ -168,6 +177,25 @@ async function withStreamServer(handler, run) {
     await new Promise(resolve => server.close(resolve));
   }
 }
+
+test('token metadata compatibility probes the exact schema-valid authenticated route', async () => {
+  let observed;
+  await withStreamServer((req, res) => {
+    let body = ''; req.setEncoding('utf8'); req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      observed = { method: req.method, url: req.url, contentType: req.headers['content-type'], body: JSON.parse(body) };
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end('{"error":"authentication_required","message":"A verified Privy session is required."}');
+    });
+  }, targetPort => verifyTokenMetadataAuthEndpoint({ targetPort, timeoutMs: 1_000 }));
+  assert.equal(observed.method, 'POST');
+  assert.equal(observed.url, '/v1/token-launches/metadata');
+  assert.equal(observed.contentType, 'application/json');
+  assert.deepEqual(observed.body, {
+    name: 'Compatibility', symbol: 'COMPAT', description: 'Compatibility token metadata.',
+    imageBase64: '/9j/2Q==', imageMediaType: 'image/jpeg'
+  });
+});
 const streamSnapshot = { schemaVersion: 1, stocks: [{ id: 'backpack:MSFT.US', activity: { currency: 'USDC' } }] };
 const validateSnapshot = value => {
   assert.equal(value.schemaVersion, 1);

@@ -109,6 +109,13 @@ export function validateTransferAuthCompatibilityResponse(statusCode, content) {
   }
 }
 
+export function validateTokenMetadataAuthCompatibilityResponse(statusCode, content) {
+  const result = JSON.parse(content);
+  if (statusCode !== 401 || result?.error !== 'authentication_required') {
+    throw new Error('Authenticated token-metadata endpoint is missing or incompatible; update the backend before installing.');
+  }
+}
+
 /** Only public Android identifiers are passed to the local backend; secrets are ignored. */
 export function readPrivyPublicEnvironment(project) {
   const filename = path.join(project, 'local.properties');
@@ -127,8 +134,8 @@ export function readPrivyPublicEnvironment(project) {
 export function verifyWalletTransferAuthEndpoint({ targetPort = port, timeoutMs = 5_000 } = {}) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ schemaVersion: 1, operationId: '5a40fc8d-10d4-4da9-b44f-b4e28ef917cc',
-      walletId: 'compatibility-wallet', chain: 'ETHEREUM', sender: '0x1111111111111111111111111111111111111111',
-      recipient: '0x2222222222222222222222222222222222222222', assetId: 'ETHEREUM:native', amount: '0.1' });
+      walletId: 'compatibility-wallet', chain: 'SOLANA', sender: '4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi',
+      recipient: '8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR', assetId: 'SOLANA:native', amount: '0.1' });
     const req = request({ hostname: '127.0.0.1', port: targetPort, path: '/v1/wallet/transfer/prepare', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => {
       let content = ''; res.setEncoding('utf8');
@@ -137,6 +144,23 @@ export function verifyWalletTransferAuthEndpoint({ targetPort = port, timeoutMs 
       res.on('error', reject);
     });
     const deadline = setTimeout(() => req.destroy(new Error('Transfer authentication compatibility check timed out.')), timeoutMs);
+    req.on('close', () => clearTimeout(deadline)); req.on('error', reject); req.end(body);
+  });
+}
+
+/** A schema-valid request must reach Privy authentication without publishing an asset. */
+export function verifyTokenMetadataAuthEndpoint({ targetPort = port, timeoutMs = 5_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ name: 'Compatibility', symbol: 'COMPAT', description: 'Compatibility token metadata.',
+      imageBase64: '/9j/2Q==', imageMediaType: 'image/jpeg' });
+    const req = request({ hostname: '127.0.0.1', port: targetPort, path: '/v1/token-launches/metadata', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => {
+      let content = ''; res.setEncoding('utf8');
+      res.on('data', chunk => { content += chunk; if (Buffer.byteLength(content) > 4_096) req.destroy(new Error('Token metadata compatibility response was too large.')); });
+      res.on('end', () => { try { validateTokenMetadataAuthCompatibilityResponse(res.statusCode, content); resolve(); } catch (error) { reject(error); } });
+      res.on('error', reject);
+    });
+    const deadline = setTimeout(() => req.destroy(new Error('Token metadata authentication compatibility check timed out.')), timeoutMs);
     req.on('close', () => clearTimeout(deadline)); req.on('error', reject); req.end(body);
   });
 }
@@ -498,6 +522,8 @@ export async function main(args) {
     console.log('Verified read-only wallet portfolio endpoint and its request validation.');
     await verifyWalletTransferAuthEndpoint();
     console.log('Verified Privy bearer authentication is required before wallet transfer preparation.');
+    await verifyTokenMetadataAuthEndpoint();
+    console.log('Verified Privy bearer authentication is required before token metadata publication.');
     return;
   }
   const present = launchctl('list', label).status === 0;
