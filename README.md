@@ -4,9 +4,7 @@
 </p>
 
 <p align="center">
-  <!-- Add the main Eleven Capital screenshot here.
-  <img width="852" alt="Eleven Capital on Seeker" src="YOUR_IMAGE_URL" />
-  -->
+  <img width="852" height="621" alt="Pasted 2026-09-26 at 17 18 20" src="https://github.com/user-attachments/assets/a0252a4e-f5ec-4252-b081-e9f5801ffe4a" />
 </p>
 
 <p align="center">
