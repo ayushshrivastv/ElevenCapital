@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/Android-Kotlin-7F52FF?logo=kotlin&logoColor=white" alt="Android and Kotlin" />
   <img src="https://img.shields.io/badge/Privy-Embedded%20Wallets-6E5AE6" alt="Privy" />
   <img src="https://img.shields.io/badge/Solana-Settlement-111111?logo=solana&logoColor=white" alt="Solana" />
-  <img src="https://img.shields.io/badge/Arbitrum-Cross--Chain%20Payments-2D9CDB" alt="Arbitrum" />
+  <img src="https://img.shields.io/badge/Arbitrum-Cross--Chain%20Payments-2D9CDB" alt="Ethereum" />
 </p>
 
 Eleven Capital lets people explore tokenized U.S. stocks, ETFs, and private-company exposure from one mobile app. Instead of starting with a bridge, a token address, or a trading venue, an investor starts with the company they want to follow.
