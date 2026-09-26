@@ -3,6 +3,7 @@
 .kotlin/
 .idea/
 **/build/
+**/target/
 local.properties
 *.iml
 .DS_Store
@@ -11,6 +12,7 @@ local.properties
 *.keystore
 node_modules/
 backend/dist/
+web/dist/
 backend/.env
 backend/.env.*
 !backend/.env.example
@@ -19,6 +21,10 @@ backend/runtime/private-transfer-intents.json.tmp-*
 backend/runtime/private-purchase-intents.json
 backend/runtime/private-purchase-intents.json.tmp-*
 *.apk
+/Apk build/
+/index.html
+/artifacts/
+/design-previews/
 *.aab
 *.pyc
 __pycache__/
@@ -32,3 +38,4 @@ backend/verification/
 /AGENTS.md
 /backend/*.md
 /tools/
+/scripts/.preview-service/
