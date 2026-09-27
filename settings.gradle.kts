@@ -20,5 +20,6 @@ include(":core")
 // Core data tests can run on the 8GB Mac before the Android SDK is installed.
 // Android Studio import/build: pass -PandroidBuild=true (see README).
 if (providers.gradleProperty("androidBuild").orNull == "true") {
+    include(":market-data")
     include(":app")
 }
