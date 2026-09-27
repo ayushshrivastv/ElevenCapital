@@ -31,12 +31,30 @@ data class Stock(
     val activity: StockMarketActivity? = null,
     /** Provider-owned product page. It is optional and must not be synthesized from the symbol. */
     val informationUrl: String? = null,
+    /** Issuer-reported token deployments, retained independently of available analytics. */
+    val deployments: List<StockDeployment> = emptyList(),
+    /** Original-share market data, kept separate from the token quote and token-market activity. */
+    val robinhoodReference: RobinhoodStockReference? = null,
 ) {
     init {
         require(symbol.isNotBlank()) { "A stock symbol must not be blank." }
         require(name.isNotBlank()) { "A stock name must not be blank." }
         require(description == null || description.length <= 20_000) { "A stock description is too long." }
         require(informationUrl == null || informationUrl.isNotBlank()) { "A stock information URL must not be blank." }
+    }
+}
+
+data class StockDeployment(
+    val network: String,
+    val address: String,
+    val chainId: String? = null,
+    val decimals: Int? = null,
+) {
+    init {
+        require(network.isNotBlank())
+        require(address.isNotBlank())
+        require(chainId == null || chainId.matches(Regex("[0-9]{1,20}")))
+        require(decimals == null || decimals in 0..255)
     }
 }
 

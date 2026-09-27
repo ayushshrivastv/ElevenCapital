@@ -17,11 +17,13 @@ data class StockMarketActivity(
 ) {
     init {
         require(currencyCode in setOf("USD", "USDC"))
-        require(source in setOf("Jupiter", "Backpack", "Yahoo"))
-        require(scope in setOf("solana_token", "external_market", "underlying_share"))
+        require(source in setOf("Jupiter", "Backpack", "Yahoo", "Robinhood", "GeckoTerminal"))
+        require(scope in setOf("solana_token", "external_market", "underlying_share", "robinhood_chain_token"))
         require(source != "Jupiter" || (scope == "solana_token" && currencyCode == "USD"))
         require(source != "Backpack" || (scope == "external_market" && currencyCode == "USDC"))
         require(source != "Yahoo" || (scope == "underlying_share" && currencyCode == "USD"))
+        require((source in setOf("Robinhood", "GeckoTerminal")) == (scope == "robinhood_chain_token"))
+        require(source !in setOf("Robinhood", "GeckoTerminal") || currencyCode == "USD")
         require(volume24h == null || volume24h.signum() >= 0)
         require(netVolume24h == null || (volume24h != null && netVolume24h.abs() <= volume24h))
         require(if (volume24h == null) !volumeReason.isNullOrBlank() else volumeReason == null && receivedAt != null)

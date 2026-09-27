@@ -33,7 +33,7 @@ data class StockStatisticsReference(
     val updatedAt: Instant? = null,
 ) {
     init {
-        require(network == null || network == "solana")
+        require(network == null || network in setOf("solana", "robinhood_chain"))
         require((network == null) == (mint == null))
         require(metrics.keys == StockMetricKey.entries.toSet())
         metrics.forEach { (key, metric) -> require(metric.unit == key.unit) }

@@ -30,6 +30,26 @@ class StockMarketActivityTest {
         assertEquals("Provider does not report buy/sell volume.", observation.netVolumeReason)
     }
 
+    @Test fun robinhoodActivityUsesItsOwnChainAndUsdProvenance() {
+        val observation = StockMarketActivity("USD", "Robinhood", "robinhood_chain_token", null,
+            null, null, null, "Token volume unavailable.", "Token buy/sell flow unavailable.")
+        assertNull(observation.expire(now, 0).volume24h)
+        assertThrows(IllegalArgumentException::class.java) { observation.copy(scope = "solana_token") }
+        assertThrows(IllegalArgumentException::class.java) { observation.copy(source = "Jupiter") }
+        assertThrows(IllegalArgumentException::class.java) { observation.copy(currencyCode = "USDC") }
+    }
+
+    @Test fun verifiedRobinhoodPoolKeepsDirectionalUsdVolumeAndExpiresAtSourceDeadline() {
+        val observation = StockMarketActivity("USD", "GeckoTerminal", "robinhood_chain_token",
+            BigDecimal("480262.21627722"), BigDecimal("-65146.288885142"), now.minusSeconds(240),
+            null, null, null)
+        assertEquals(BigDecimal("-65146.288885142"), observation.expire(now, 60_000).netVolume24h)
+        assertNull(observation.expire(now, 60_001).volume24h)
+        assertNull(observation.expire(now, 60_001).netVolume24h)
+        assertThrows(IllegalArgumentException::class.java) { observation.copy(scope = "solana_token") }
+        assertThrows(IllegalArgumentException::class.java) { observation.copy(currencyCode = "USDC") }
+    }
+
     @Test fun upstreamAgePlusElapsedTimeExpiresBothValues() {
         val observation = activity().copy(updatedAt = now.minusSeconds(240))
         assertNotNull(observation.expire(now, 60_000).volume24h)
