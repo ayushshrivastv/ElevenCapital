@@ -30,6 +30,22 @@ class StockExplorerLinkTest {
     }
 
     @Test
+    fun `Robinhood Chain contract opens its exact RobinScan address`() {
+        val contract = "0x322F0929c4625eD5bAd873c95208D54E1c003b2d"
+        for (network in listOf("Robinhood Chain", "robinhood_chain")) {
+            val link = exactStockExplorerLink(network, contract)
+            assertEquals("Robinhood Chain", link?.networkLabel)
+            assertEquals("RobinScan", link?.explorerLabel)
+            assertEquals("https://robin.etherscan.io/address/$contract", link?.url)
+        }
+        assertNull(exactStockExplorerLink("Robinhood Chain", contract + "?network=1"))
+        assertNull(exactStockExplorerLink("Robinhood Chain", "0x123"))
+        assertNull(exactStockExplorerLink("Robinhood Chain", "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB"))
+        assertNull(exactStockExplorerLink("ethereum", contract))
+        assertNull(exactStockExplorerLink("arbitrum", contract))
+    }
+
+    @Test
     fun `only HTTPS product information URLs can be opened`() {
         assertEquals("https://prestocks.com/products/openai",
             safeStockInformationUrl("https://prestocks.com/products/openai"))
@@ -60,5 +76,19 @@ class StockExplorerLinkTest {
         org.junit.Assert.assertFalse(isPurchaseSolscanUrl("https://solscan.io.evil.test/tx/$signature"))
         org.junit.Assert.assertFalse(isPurchaseSolscanUrl("$url?cluster=devnet"))
         org.junit.Assert.assertFalse(isPurchaseSolscanUrl("$url#details"))
+    }
+
+    @Test
+    fun `Robinhood Tesla holding opens only the provided transaction`() {
+        assertEquals(
+            "https://robin.etherscan.io/tx/0x93ef1e59b9746546ccd5d727bfeac159fb4de8830418e1129b5dce09ed217cc8",
+            ROBINHOOD_TESLA_TRANSACTION_URL,
+        )
+        org.junit.Assert.assertTrue(isRobinhoodTeslaTransactionUrl(ROBINHOOD_TESLA_TRANSACTION_URL))
+        org.junit.Assert.assertFalse(isRobinhoodTeslaTransactionUrl("$ROBINHOOD_TESLA_TRANSACTION_URL?foo=1"))
+        org.junit.Assert.assertFalse(isRobinhoodTeslaTransactionUrl("$ROBINHOOD_TESLA_TRANSACTION_URL#details"))
+        org.junit.Assert.assertFalse(isRobinhoodTeslaTransactionUrl(
+            ROBINHOOD_TESLA_TRANSACTION_URL.replace("robin.etherscan.io", "robin.etherscan.io.evil.test"),
+        ))
     }
 }

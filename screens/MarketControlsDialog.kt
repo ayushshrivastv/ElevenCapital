@@ -11,10 +11,14 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -32,9 +36,18 @@ fun MarketControlsDialog(
     onChange: (MarketQuery) -> Unit,
     watchlistOnly: Boolean,
     onWatchlistOnlyChange: (Boolean) -> Unit,
+    focusSearch: Boolean = false,
     onDismiss: () -> Unit,
 ) {
+    val searchFocusRequester = androidx.compose.runtime.remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
     Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(focusSearch) {
+            if (focusSearch) {
+                searchFocusRequester.requestFocus()
+                keyboardController?.show()
+            }
+        }
         Column(Modifier.fillMaxWidth().heightIn(max = rd(610f))
             .clip(RoundedCornerShape(rd(22f))).background(P.Card).padding(rd(20f))) {
             RefText("Search & filters", 20f, weight = FontWeight.Bold)
@@ -47,7 +60,7 @@ fun MarketControlsDialog(
                 cursorBrush = SolidColor(P.Lime),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onDismiss() }),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().focusRequester(searchFocusRequester)
                     .semantics { contentDescription = "Search by stock name or symbol" }
                     .clip(CircleShape).background(P.Chip).padding(horizontal = rd(16f), vertical = rd(14f)),
                 decorationBox = { field ->

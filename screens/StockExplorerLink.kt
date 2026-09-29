@@ -15,6 +15,15 @@ internal data class StockExplorerLink(
 )
 
 internal fun exactStockExplorerLink(network: String?, address: String?): StockExplorerLink? {
+    if (network in setOf("robinhood_chain", "Robinhood Chain") &&
+        address?.matches(Regex("0x[0-9a-fA-F]{40}")) == true) {
+        return StockExplorerLink(
+            networkLabel = "Robinhood Chain",
+            explorerLabel = "RobinScan",
+            address = address,
+            url = "https://robin.etherscan.io/address/$address",
+        )
+    }
     if (!network.equals("solana", ignoreCase = true) || address == null || !isSolanaPublicKey(address)) return null
     return StockExplorerLink(
         networkLabel = "Solana",
@@ -31,7 +40,7 @@ internal fun completedPurchaseSolscanUrl(status: PurchaseStatus?): String? {
     return purchaseHistorySolscanUrl(signature)
 }
 
-/** A completed history row can link only its verified Solana transaction, never an EVM deposit. */
+/** A completed history row can link only its verified Solana transaction. */
 internal fun purchaseHistorySolscanUrl(transactionId: String?): String? =
     transactionId?.takeIf(::isCanonicalSolanaSignature)?.let { "https://solscan.io/tx/$it" }
 

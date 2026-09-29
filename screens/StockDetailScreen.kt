@@ -1,20 +1,14 @@
 package com.elevencapital.app.screens
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -40,13 +34,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -71,6 +63,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
+import com.elevencapital.app.R
 import com.elevencapital.app.ui.P
 import com.elevencapital.app.ui.RefIcon
 import com.elevencapital.app.ui.RefText
@@ -79,6 +72,7 @@ import com.elevencapital.app.ui.SquareLogo
 import com.elevencapital.app.ui.StockIcon
 import com.elevencapital.app.ui.WalletStyle
 import com.elevencapital.app.ui.rd
+import com.elevencapital.app.ui.stockCompanyName
 import com.elevencapital.core.stock.ChartRange
 import com.elevencapital.core.stock.Stock
 import com.elevencapital.core.stock.StockLogoReference
@@ -97,8 +91,9 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+private val StockChartAccent = Color(0xFFF19F41)
 
 /** Optional, provider-owned facts needed by the terminal reference. */
 data class DetailPresentation(
@@ -160,12 +155,7 @@ data class DetailNewsItem(
     val likesLabel: String? = null,
 )
 
-enum class DetailSection(val label: String) {
-    OVERVIEW("Overview"), ORDER_BOOK("Order book"),
-}
-
-/** The toolbar and order actions stay fixed; the section strip pins below the toolbar. */
-@OptIn(ExperimentalFoundationApi::class)
+/** The toolbar and order actions stay fixed while the stock details scroll. */
 @Composable
 fun StockDetailScreen(
     stock: Stock,
@@ -175,7 +165,6 @@ fun StockDetailScreen(
     onWatch: () -> Unit,
     modifier: Modifier = Modifier,
     detail: DetailPresentation = DetailPresentation(),
-    initialSection: DetailSection = DetailSection.OVERVIEW,
     listState: LazyListState? = null,
     onRangeSelected: (ChartRange) -> Unit = {},
     priceNotice: String? = null,
@@ -185,12 +174,12 @@ fun StockDetailScreen(
     onExit: () -> Unit = {},
     onSell: () -> Unit = {},
     onOpenExplorer: ((String) -> Unit)? = null,
+    hasPosition: Boolean = false,
 ) {
     var range by remember(stock.id) { mutableStateOf(ChartRange.ONE_DAY) }
-    var showCandles by remember(stock.id) { mutableStateOf(!stock.id.value.startsWith("prestocks:")) }
-    var section by remember(stock.id) { mutableStateOf(initialSection) }
+    var showCandles by remember(stock.id) { mutableStateOf(
+        !stock.id.value.startsWith("prestocks:") && !stock.id.value.startsWith("robinhood:")) }
     val resolvedListState = listState ?: key(stock.id) { rememberLazyListState() }
-    val scrollScope = rememberCoroutineScope()
     val points = stock.charts[range].orEmpty()
     val currentRangeCallback by rememberUpdatedState(onRangeSelected)
     val currentExitCallback by rememberUpdatedState(onExit)
@@ -199,14 +188,12 @@ fun StockDetailScreen(
     DisposableEffect(stock.id) { onDispose { currentExitCallback() } }
     LaunchedEffect(stock.id, range) { currentRangeCallback(range) }
 
-    BoxWithConstraints(modifier.fillMaxSize().background(P.Background)) {
-        // Order book retains the viewport height while Overview ends at its listing row.
-        val minimumSectionHeight = (maxHeight - rd(237f)).coerceAtLeast(rd(0f))
+    Box(modifier.fillMaxSize().background(Color.Black)) {
         Column(Modifier.fillMaxSize()) {
             DetailToolbar(stock, detail, isWatched, onBack, onWatch)
             LazyColumn(
                 state = resolvedListState,
-                contentPadding = PaddingValues(bottom = if (section == DetailSection.OVERVIEW) rd(28f) else rd(12f)),
+                contentPadding = PaddingValues(bottom = rd(28f)),
                 modifier = Modifier.fillMaxSize().padding(bottom = rd(78f)),
             ) {
                 item(key = "quote") {
@@ -214,50 +201,23 @@ fun StockDetailScreen(
                         Spacer(Modifier.height(rd(30f)))
                         DetailQuote(
                             stock,
-                            detail.rangeChanges[range],
+                            detail.rangeChanges[range].takeUnless { stock.id.value.startsWith("robinhood:") },
                             allowQuoteChange = useQuoteChangeForAllRanges || range == ChartRange.ONE_DAY,
                         )
                         Spacer(Modifier.height(rd(24f)))
                         DetailRanges(range, showCandles, { range = it }) { showCandles = !showCandles }
                         DetailPriceChart(stock, range, points, detail.chartBounds[range],
                             chartMessage, chartContext, showCandles)
-                        Spacer(Modifier.height(rd(30f)))
-                    }
-                }
-                stickyHeader(key = "sections") {
-                    DetailSections(section) {
-                        section = it
-                        scrollScope.launch { resolvedListState.animateScrollToItem(1) }
+                        Spacer(Modifier.height(rd(12f)))
                     }
                 }
                 item(key = "body") {
-                    Box(Modifier.fillMaxWidth()
-                        .then(if (section == DetailSection.OVERVIEW) Modifier
-                            else Modifier.heightIn(min = minimumSectionHeight))
-                        .clipToBounds()) {
-                        AnimatedContent(
-                            targetState = section,
-                            modifier = Modifier.fillMaxWidth(),
-                            transitionSpec = {
-                                val direction = if (targetState.ordinal > initialState.ordinal) 1 else -1
-                                (slideInHorizontally(
-                                    tween(ReferenceMotion.SectionMillis, easing = ReferenceMotion.Easing),
-                                ) { width -> direction * width } togetherWith slideOutHorizontally(
-                                    tween(ReferenceMotion.SectionMillis, easing = ReferenceMotion.Easing),
-                                ) { width -> -direction * width }).using(null)
-                            },
-                            label = "Detail section",
-                        ) { visibleSection ->
-                            when (visibleSection) {
-                                DetailSection.OVERVIEW -> DetailOverview(stock, detail, openExplorer)
-                                DetailSection.ORDER_BOOK -> DetailOrderBook()
-                            }
-                        }
-                    }
+                    DetailOverview(stock, detail, openExplorer)
                 }
             }
         }
-        DetailOrderActions(stock.symbol, onBuy, onSell, Modifier.align(Alignment.BottomCenter))
+        DetailOrderActions(stock.symbol, onBuy, onSell, hasPosition,
+            Modifier.align(Alignment.BottomCenter))
     }
 }
 
@@ -269,7 +229,7 @@ private fun DetailToolbar(
     onBack: () -> Unit,
     onWatch: () -> Unit,
 ) {
-    Box(Modifier.fillMaxWidth().height(rd(66f)).zIndex(1f).background(P.Background)) {
+    Box(Modifier.fillMaxWidth().height(rd(66f)).zIndex(1f).background(Color.Black)) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxSize().padding(start = rd(17f), end = rd(26f)),
@@ -289,7 +249,7 @@ private fun DetailToolbar(
                 }
                 Spacer(Modifier.height(rd(4f)))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    RefText(stock.name,
+                    RefText(stockCompanyName(stock),
                         14f, P.Muted, modifier = Modifier.weight(1f, fill = false))
                     Spacer(Modifier.width(rd(7f)))
                     RefIcon("copy", 16f, P.Muted, Modifier.semantics {
@@ -433,7 +393,7 @@ private fun DetailPriceChart(
         DetailLinePriceChart(stock, range, visiblePoints, suppliedBounds,
             chartMessage, currency, timeDomain)
     }
-    if (visiblePoints.isNotEmpty() && context?.sourceLabel != null) {
+    if (!stock.id.value.startsWith("robinhood:") && visiblePoints.isNotEmpty() && context?.sourceLabel != null) {
         RefText(context.sourceLabel, 11f, P.Muted,
             modifier = Modifier.padding(start = rd(22f), top = rd(3f)))
     }
@@ -574,7 +534,7 @@ private fun DetailCandlestickChart(
     val currentPriceStrokePx = .8f * referencePixel
     val dashPx = 2f * referencePixel
     val dashGapPx = 3f * referencePixel
-    Column {
+    Column(Modifier.background(Color.Black)) {
         Box(Modifier.fillMaxWidth().height(rd(374f))) {
             Canvas(Modifier.fillMaxSize()) {
                 val left = leftInsetPx
@@ -596,7 +556,7 @@ private fun DetailCandlestickChart(
                         .coerceAtMost(maxBodyWidthPx).coerceAtLeast(minBodyWidthPx)
                     candles.forEach { candle ->
                         val x = left + (right - left) * candle.timeFraction
-                        val color = if (candle.close >= candle.open) P.Lime else P.Pink
+                        val color = if (candle.close >= candle.open) StockChartAccent else P.Pink
                         val highY = y(candle.high)
                         val lowY = y(candle.low)
                         val openY = y(candle.open)
@@ -666,9 +626,12 @@ private fun DetailLinePriceChart(
     val inset = rd(8f)
     val topGap = rd(32f)
     val bottomGap = rd(29f)
-    val endpoint = rd(4.5f)
-    Column {
+    val endpoint = rd(3f)
+    Column(Modifier.background(Color.Black)) {
         Box(Modifier.fillMaxWidth().height(rd(374f))) {
+            Box(Modifier.align(Alignment.Center).padding(top = rd(36f))) {
+                SquareLogo(46f, .075f)
+            }
             Canvas(Modifier.fillMaxSize()) {
                 drawLine(P.White.copy(alpha = .07f), Offset.Zero, Offset(size.width, 0f), 1f)
                 drawLine(P.White.copy(alpha = .035f), Offset(0f, size.height),
@@ -689,28 +652,16 @@ private fun DetailLinePriceChart(
                             lineTo(next.x, next.y)
                         }
                     }
-                    val area = Path().apply {
-                        addPath(line)
-                        lineTo(point(values.lastIndex).x, size.height)
-                        lineTo(point(0).x, size.height)
-                        close()
-                    }
                     clipRect(right = size.width * reveal.value) {
-                        drawPath(area, Brush.verticalGradient(listOf(P.Lime.copy(alpha = .16f),
-                            P.Lime.copy(alpha = .005f)), top, size.height))
-                        drawPath(line, P.Lime, style = Stroke(stroke.toPx(), cap = StrokeCap.Butt,
+                        drawPath(line, StockChartAccent, style = Stroke(stroke.toPx(), cap = StrokeCap.Butt,
                             join = StrokeJoin.Miter))
-                        val last = point(values.lastIndex)
-                        drawCircle(P.White.copy(alpha = .42f), endpoint.toPx() * 1.9f, last)
-                        drawCircle(P.White, endpoint.toPx(), last)
                     }
                 } else if (values.size == 1) {
                     val current = Offset(
                         size.width - inset.toPx(),
                         topGap.toPx() + (size.height - topGap.toPx() - bottomGap.toPx()) / 2f,
                     )
-                    drawCircle(P.White.copy(alpha = .42f), endpoint.toPx() * 1.9f, current)
-                    drawCircle(P.White, endpoint.toPx(), current)
+                    drawCircle(StockChartAccent, endpoint.toPx(), current)
                 }
             }
             if (hasBounds) {
@@ -718,9 +669,6 @@ private fun DetailLinePriceChart(
                     modifier = Modifier.align(Alignment.TopEnd).padding(top = rd(13f)))
                 RefText(money(BigDecimal.valueOf(minimum), currency), 13f, P.Muted,
                     modifier = Modifier.align(Alignment.BottomStart).padding(bottom = rd(5f)))
-            }
-            Box(Modifier.align(Alignment.Center).padding(top = rd(36f))) {
-                SquareLogo(30f, .055f)
             }
             if (points.isEmpty()) {
                 RefText(if (chartMessage?.contains("loading", ignoreCase = true) == true)
@@ -733,52 +681,41 @@ private fun DetailLinePriceChart(
 }
 
 @Composable
-private fun DetailSections(section: DetailSection, onSelect: (DetailSection) -> Unit) {
-    Row(Modifier.fillMaxWidth().height(rd(67f)).background(P.Background)
-        .padding(start = rd(22f), end = rd(21f)),
-        horizontalArrangement = Arrangement.spacedBy(rd(18f)),
-        verticalAlignment = Alignment.Top) {
-        DetailSection.entries.forEach { item ->
-            val active = section == item
-            Column(Modifier.height(rd(55f))
-                .semantics { selected = active }
-                .clickable(role = Role.Tab) { onSelect(item) }
-                .padding(top = rd(10f)), horizontalAlignment = Alignment.Start) {
-                RefText(item.label, 20f, if (active) P.White else P.Muted,
-                    FontWeight.Bold)
-            }
-        }
-    }
-}
-
-@Composable
-private fun DetailOrderBook() {
-    Column(Modifier.fillMaxWidth().padding(horizontal = rd(22f), vertical = rd(20f))) {
-        RefText("Order book unavailable", 20f, weight = FontWeight.Bold)
-        Spacer(Modifier.height(rd(9f)))
-        RefText("Live bid and ask prices are unavailable for this listing.", 15f, P.Muted,
-            maxLines = Int.MAX_VALUE)
-    }
-}
-
-@Composable
 private fun DetailOverview(
     stock: Stock,
     detail: DetailPresentation,
     onOpenExplorer: (String) -> Unit,
 ) {
     val reference = stock.statistics?.reference
-    val explorer = exactStockExplorerLink(reference?.network, reference?.mint)
+    val explorer = stock.deployments.firstNotNullOfOrNull { exactStockExplorerLink(it.network, it.address) }
+        ?: exactStockExplorerLink(reference?.network, reference?.mint)
     val informationUrl = safeStockInformationUrl(stock.informationUrl)
     Column(Modifier.fillMaxWidth().padding(start = rd(18f), end = rd(18f), top = rd(13f))) {
-        RefText("About stocks", 20f, weight = FontWeight.Bold)
+        RefText(if (stock.id.value.startsWith("robinhood:")) "About ${stock.symbol}" else "About stocks",
+            20f, weight = FontWeight.Bold)
         Spacer(Modifier.height(rd(12f)))
-        RefText(stock.description?.takeIf(String::isNotBlank) ?: stock.name,
+        RefText(detailAboutDescription(stock),
             18f, P.Muted, maxLines = Int.MAX_VALUE)
+        if (stock.id.value.startsWith("robinhood:")) {
+            Spacer(Modifier.height(rd(12f)))
+            RefText("${stock.symbol} is a Robinhood Stock Token backed 1:1 by the corresponding underlying shares " +
+                "held with Robinhood’s US custody partner. It provides economic exposure to ${stockCompanyName(stock)} " +
+                "without direct share ownership. Reinvested dividends and stock splits can adjust the shares " +
+                "represented by each token.", 18f, P.Muted, maxLines = Int.MAX_VALUE)
+        }
         Spacer(Modifier.height(rd(21f)))
         DetailListingSource(detail.providerLabel?.takeIf(String::isNotBlank) ?: "Market listing",
             stock.symbol, explorer, informationUrl, onOpenExplorer)
     }
+}
+
+/** Robinhood descriptions put the company first, followed by instrument and issuer explanations. */
+internal fun detailAboutDescription(stock: Stock): String {
+    val description = stock.description?.takeIf(String::isNotBlank) ?: return stockCompanyName(stock)
+    if (!stock.id.value.startsWith("robinhood:")) return description
+    return description.split(Regex("\\r?\\n\\s*\\r?\\n"), limit = 2).first().trim()
+        .takeIf { it.isNotBlank() && !it.startsWith("Robinhood Stock Tokens", ignoreCase = true) }
+        ?: stockCompanyName(stock)
 }
 
 @Composable
@@ -793,17 +730,22 @@ private fun DetailListingSource(
     Spacer(Modifier.height(rd(8f)))
     val sourceUrl = explorer?.url ?: informationUrl
     val rowModifier = Modifier.fillMaxWidth().heightIn(min = rd(58f))
-        .clip(RoundedCornerShape(rd(16f))).background(P.Card)
+        .stockGlass(RoundedCornerShape(rd(16f)), P.Card)
         .then(if (sourceUrl == null) Modifier else Modifier
             .semantics {
                 contentDescription = explorer?.let {
-                    "Open $symbol exact ${it.networkLabel} mint ${it.address} on ${it.explorerLabel}"
+                    "Open $symbol exact ${it.networkLabel} token ${it.address} on ${it.explorerLabel}"
                 } ?: "Open $symbol listing information from $providerLabel"
             }
             .clickable(role = Role.Button) { onOpenExplorer(sourceUrl) })
         .padding(horizontal = rd(15f), vertical = rd(10f))
     Row(rowModifier, verticalAlignment = Alignment.CenterVertically) {
-        RefIcon("globe", 22f, if (sourceUrl == null) P.Muted else P.Lime)
+        if (explorer?.networkLabel == "Robinhood Chain") {
+            Image(painterResource(R.drawable.market_source_robinhood), contentDescription = "Robinhood",
+                modifier = Modifier.size(rd(27f)).clip(CircleShape), contentScale = ContentScale.Fit)
+        } else {
+            RefIcon("globe", 22f, if (sourceUrl == null) P.Muted else P.Lime)
+        }
         Spacer(Modifier.width(rd(12f)))
         Column(Modifier.weight(1f)) {
             RefText(providerLabel, 16f, weight = FontWeight.Medium, maxLines = 2)
@@ -821,6 +763,10 @@ private fun DetailListingSource(
             RefIcon("chevronRight", 18f, P.Muted)
         }
     }
+    if (explorer?.networkLabel == "Robinhood Chain") {
+        Spacer(Modifier.height(rd(8f)))
+        RefText("View this token’s exact contract on Robinhood Chain.", 12f, P.Muted, maxLines = 2)
+    }
 }
 
 @Composable
@@ -837,6 +783,7 @@ private fun DetailActivityReferences(activity: StockMarketActivity) {
     RefText(when (activity.source) {
         "Jupiter" -> "Total reported buy and sell turnover over 24 hours."
         "Yahoo" -> "Underlying-share 24-hour turnover, converted to the displayed USD reference."
+        "Robinhood" -> "Robinhood Chain token turnover is unavailable from the current price feed."
         else -> "Reported 24-hour turnover in the market’s USDC quote currency."
     },
         13f, P.Muted, maxLines = Int.MAX_VALUE)
@@ -865,6 +812,7 @@ private fun DetailActivityReferences(activity: StockMarketActivity) {
 private fun activityScope(activity: StockMarketActivity): String = when (activity.scope) {
     "solana_token" -> "Activity for this tokenized stock’s Solana token; not trading in the underlying company’s shares."
     "underlying_share" -> "Activity for the underlying share reference; not this token’s onchain activity."
+    "robinhood_chain_token" -> "Activity for this stock token on Robinhood Chain."
     else -> "Activity for this Backpack external market; not xStock onchain activity."
 }
 
@@ -881,7 +829,9 @@ private fun activityNetColor(value: BigDecimal?): Color = when (value?.signum())
 private fun DetailMetricReferences(reference: StockStatisticsReference) {
     RefText("Market metrics", 20f, weight = FontWeight.Bold)
     Spacer(Modifier.height(rd(10f)))
-    RefText("These figures describe this stock’s Solana token, not the underlying company.",
+    RefText(if (reference.network == "robinhood_chain")
+        "These figures describe this stock token on Robinhood Chain."
+        else "These figures describe this stock’s Solana token, not the underlying company.",
         14f, P.Muted, maxLines = Int.MAX_VALUE)
     val definitions = listOf(
         Triple(StockMetricKey.MARKET_CAPITALIZATION, "Token market capitalization", "Provider-reported market value of the circulating token supply, in USD."),
@@ -1053,7 +1003,7 @@ private fun DetailTerminal(stock: Stock, detail: DetailPresentation, expanded: B
     val missingValue = "—"
     val activityCurrency = activity?.currencyCode ?: stock.quote.currencyCode
     Column(Modifier.fillMaxWidth().padding(start = rd(22f), end = rd(22f), top = rd(6f))) {
-        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(rd(15f))).background(P.Card)) {
+        Column(Modifier.fillMaxWidth().stockGlass(RoundedCornerShape(rd(15f)), P.Card)) {
             Row(Modifier.fillMaxWidth().height(rd(35f))) {
                 DetailPeriod.entries.forEach { period ->
                     Row(Modifier.weight(1f).fillMaxSize()
@@ -1214,7 +1164,7 @@ private fun DetailDelta(label: String, value: BigDecimal?, modifier: Modifier) {
 
 @Composable
 private fun DetailInfoCard(cell: DetailInfoCell, modifier: Modifier) {
-    Column(modifier.height(rd(79f)).clip(RoundedCornerShape(rd(19f))).background(P.Card)
+    Column(modifier.height(rd(79f)).stockGlass(RoundedCornerShape(rd(19f)), P.Card)
         .padding(horizontal = rd(17f), vertical = rd(13f))) {
         RefText(cell.label, 15f, P.Muted)
         Spacer(Modifier.height(rd(10f)))
@@ -1310,6 +1260,7 @@ private fun DetailOrderActions(
     symbol: String,
     onBuy: () -> Unit,
     onSell: () -> Unit,
+    hasPosition: Boolean,
     modifier: Modifier,
 ) {
     Row(
@@ -1333,17 +1284,19 @@ private fun DetailOrderActions(
             Spacer(Modifier.width(rd(8f)))
             RefText("Buy", 18f, WalletStyle.Ink, FontWeight.Medium)
         }
-        Row(
-            Modifier.width(rd(122f)).height(rd(58f))
-                .clip(CircleShape).background(Color(0xFFF05D62))
-                .clickable(role = Role.Button, onClick = onSell)
-                .semantics { contentDescription = "Sell $symbol" },
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            RefIcon("minus", 24f, WalletStyle.Ink)
-            Spacer(Modifier.width(rd(8f)))
-            RefText("Sell", 18f, WalletStyle.Ink, FontWeight.Medium)
+        if (hasPosition) {
+            Row(
+                Modifier.width(rd(122f)).height(rd(58f))
+                    .clip(CircleShape).background(Color(0xFFF05D62))
+                    .clickable(role = Role.Button, onClick = onSell)
+                    .semantics { contentDescription = "Sell $symbol" },
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RefIcon("minus", 24f, WalletStyle.Ink)
+                Spacer(Modifier.width(rd(8f)))
+                RefText("Sell", 18f, WalletStyle.Ink, FontWeight.Medium)
+            }
         }
     }
 }

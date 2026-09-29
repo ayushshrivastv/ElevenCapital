@@ -88,6 +88,17 @@ class MarketQueryTest {
             MarketQuery(text = "openai", source = MarketSource.PRESTOCKS), false)))
     }
 
+    @Test fun robinhoodSourcePreservesSeparateListingsAndComposesWithSearch() {
+        val robinhood = row("robinhood:MSFT", "MSFT", "Microsoft Stock Token", "498.50", null)
+        val catalog = rows + robinhood
+        assertEquals(listOf("robinhood:MSFT"), ids(selectMarketRows(catalog,
+            MarketQuery(source = MarketSource.ROBINHOOD), false)))
+        assertEquals(listOf("robinhood:MSFT"), ids(selectMarketRows(catalog,
+            MarketQuery(text = "microsoft", source = MarketSource.ROBINHOOD), false)))
+        assertEquals(setOf("backed:MSFTx", "backpack:MSFT", "robinhood:MSFT"),
+            ids(selectMarketRows(catalog, MarketQuery(text = "microsoft"), false)).toSet())
+    }
+
     @Test fun gainersAndLosersExcludeUnknownAndUnchangedReturns() {
         assertEquals(listOf("backed:MSFTx"), ids(selectMarketRows(rows, MarketQuery(movement = MarketMovement.GAINERS), false)))
         assertEquals(listOf("backpack:MSFT"), ids(selectMarketRows(rows, MarketQuery(movement = MarketMovement.LOSERS), false)))

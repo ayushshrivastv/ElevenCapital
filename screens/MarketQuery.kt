@@ -1,6 +1,7 @@
 package com.elevencapital.app.screens
 
 import java.math.BigDecimal
+import com.elevencapital.app.data.RobinhoodFeaturedSymbols
 import kotlin.random.Random
 
 enum class MarketSource(val label: String, val provider: String?) {
@@ -8,6 +9,7 @@ enum class MarketSource(val label: String, val provider: String?) {
     BACKED("Backed · xStocks", "backed"),
     BACKPACK("Backpack", "backpack"),
     PRESTOCKS("PreStocks · Pre-IPO", "prestocks"),
+    ROBINHOOD("Robinhood", "robinhood"),
 }
 
 enum class MarketMovement(val label: String) {
@@ -37,7 +39,8 @@ internal class MarketFeaturedOrder(random: Random = Random.Default) {
         val backed = shuffledCompanies(random)
         // Keep the providers distinct even if a deterministic random source repeats its shuffle.
         if (backed == backpack) backed.swap(backed.lastIndex, backed.lastIndex - 1)
-        ranksByProvider = mapOf("backpack" to backpack, "backed" to backed).mapValues { (_, symbols) ->
+        ranksByProvider = mapOf("backpack" to backpack, "backed" to backed,
+            "robinhood" to RobinhoodFeaturedSymbols).mapValues { (_, symbols) ->
             symbols.withIndex().associate { (index, symbol) -> symbol to index }
         }
     }
