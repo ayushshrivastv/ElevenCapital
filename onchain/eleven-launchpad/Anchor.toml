@@ -1,0 +1,8 @@
+# Replace the example program address with a freshly generated program keypair
+# and run `anchor keys sync` before any deployment.
+[programs.localnet]
+eleven_launchpad = "Fg6PaFpoGXkYsidMpWxTWqkZp4wVghNKD2M1qvY65mFG"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
