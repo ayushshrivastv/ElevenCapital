@@ -15,11 +15,10 @@ function syntheticSolanaAddress(): string {
 }
 const transport = publicPortfolioTransport();
 const identity: Record<string, unknown>[] = [];
-for (const chain of ['SOLANA', 'ETHEREUM'] as const) {
+for (const chain of ['SOLANA'] as const) {
   try {
-    const method = chain === 'SOLANA' ? 'getGenesisHash' : 'eth_chainId';
-    const [result] = await transport.rpc(chain, [{ method, params: [] }], AbortSignal.timeout(10_000));
-    identity.push({ chain, reachable: true, mainnet: chain === 'SOLANA' ? result === MAINNET_GENESIS : result === '0x1' });
+    const [result] = await transport.rpc(chain, [{ method: 'getGenesisHash', params: [] }], AbortSignal.timeout(10_000));
+    identity.push({ chain, reachable: true, mainnet: result === MAINNET_GENESIS });
   } catch (error) { identity.push({ chain, reachable: false, reason: portfolioReadFailure(error) }); }
 }
 let stage = 'catalog';
@@ -29,10 +28,7 @@ try {
   const text = await response.text();
   if (text.length > 16 * 1024 * 1024) throw new Error('Catalog exceeded bound');
   const catalog = CatalogSchema.parse(JSON.parse(text));
-  const payload = { wallets: [
-    { chain: 'SOLANA', address: syntheticSolanaAddress() },
-    { chain: 'ETHEREUM', address: `0x${randomBytes(20).toString('hex')}` },
-  ] };
+  const payload = { wallets: [{ chain: 'SOLANA', address: syntheticSolanaAddress() }] };
   stage = 'running_portfolio_endpoint';
   const portfolioResponse = await fetch('http://127.0.0.1:8787/v1/wallet/portfolio', {
     method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },

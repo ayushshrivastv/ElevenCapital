@@ -3,13 +3,11 @@ import { Decimal } from 'decimal.js';
 
 const ExactDecimal = Decimal.clone({ precision: 160 });
 
-export const WalletChain = z.enum(['SOLANA', 'ETHEREUM']);
+export const WalletChain = z.literal('SOLANA');
 export type WalletChain = z.infer<typeof WalletChain>;
-/** A Privy EVM wallet has one address that can own assets on both EVM networks. */
-export const PortfolioNetwork = z.enum(['SOLANA', 'ETHEREUM', 'ARBITRUM']);
+export const PortfolioNetwork = z.literal('SOLANA');
 export type PortfolioNetwork = z.infer<typeof PortfolioNetwork>;
 export const SolanaAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-export const EthereumAddress = /^0x[0-9a-fA-F]{40}$/;
 /** Reject syntactically base58 strings that are not exactly 32 decoded bytes. */
 export function isSolanaAddress(value: string): boolean {
   if (!SolanaAddress.test(value)) return false;
@@ -20,13 +18,10 @@ export function isSolanaAddress(value: string): boolean {
   const bytes = integer === 0n ? 0 : Math.ceil(integer.toString(16).length / 2);
   return leading + bytes === 32;
 }
-const Wallet = z.object({ chain: WalletChain, address: z.string().max(44) }).strict().refine(
-  wallet => wallet.chain === 'SOLANA' ? isSolanaAddress(wallet.address) : EthereumAddress.test(wallet.address),
-  'Invalid wallet address');
-export const PortfolioRequestSchema = z.object({ wallets: z.array(Wallet).min(1).max(10) }).strict().refine(
-  request => new Set(request.wallets.map(wallet => `${wallet.chain}:${wallet.chain === 'ETHEREUM' ? wallet.address.toLowerCase() : wallet.address}`)).size === request.wallets.length,
-  'Duplicate wallet address').refine(request => ['SOLANA', 'ETHEREUM'].every(chain => request.wallets.filter(wallet => wallet.chain === chain).length <= 5),
-  'Too many wallets on one network');
+const Wallet = z.object({ chain: WalletChain, address: z.string().max(44).refine(isSolanaAddress) }).strict();
+export const PortfolioRequestSchema = z.object({ wallets: z.array(Wallet).min(1).max(5) }).strict().refine(
+  request => new Set(request.wallets.map(wallet => wallet.address)).size === request.wallets.length,
+  'Duplicate wallet address');
 export type PortfolioRequest = z.infer<typeof PortfolioRequestSchema>;
 export type WalletAddress = PortfolioRequest['wallets'][number];
 export type PortfolioReadWallet = { chain: PortfolioNetwork; address: string };
@@ -43,18 +38,17 @@ export const PortfolioSchema = z.object({
   }).strict()).max(200),
   tokenHoldings: z.array(z.object({
     chain: PortfolioNetwork,
-    assetId: z.string().min(1).max(60).regex(/^(?:SOLANA:(?:native|[1-9A-HJ-NP-Za-km-z]{32,44})|(?:ETHEREUM|ARBITRUM):(?:native|0x[0-9a-f]{40}))$/),
+    assetId: z.string().min(1).max(60).regex(/^SOLANA:(?:native|[1-9A-HJ-NP-Za-km-z]{32,44})$/),
     symbol: z.string().min(1).max(12).regex(/^(?:[A-Z0-9]+|[1-9A-HJ-NP-Za-km-z]{4}…[1-9A-HJ-NP-Za-km-z]{4})$/),
     quantity: PortfolioDecimal.refine(value => new Decimal(value).gt(0)),
     valueUsd: PortfolioDecimal.nullable(),
     unitPriceUsd: PortfolioDecimal.refine(value => new ExactDecimal(value).gt(0)).nullable(),
   }).strict()).max(200),
   unpricedAssets: z.number().int().min(0).max(2_000),
-  networks: z.array(z.object({ chain: PortfolioNetwork, status: z.enum(['ok', 'unavailable']), observedAt: z.iso.datetime().nullable() }).strict()).length(3),
+  networks: z.array(z.object({ chain: PortfolioNetwork, status: z.enum(['ok', 'unavailable']), observedAt: z.iso.datetime().nullable() }).strict()).length(1),
   message: z.string().max(300).nullable(),
 }).strict().superRefine((value, context) => {
-  if (new Set(value.networks.map(network => network.chain)).size !== PortfolioNetwork.options.length ||
-    PortfolioNetwork.options.some(chain => !value.networks.some(network => network.chain === chain)) ||
+  if (value.networks[0]?.chain !== 'SOLANA' ||
     new Set(value.holdings.map(holding => holding.stockId)).size !== value.holdings.length ||
     new Set(value.tokenHoldings.map(holding => holding.assetId)).size !== value.tokenHoldings.length) {
     context.addIssue({ code: 'custom', message: 'Duplicate portfolio identity' });
@@ -68,7 +62,7 @@ export const PortfolioSchema = z.object({
   for (const network of value.networks) if ((network.status === 'ok') !== (network.observedAt !== null)) {
     context.addIssue({ code: 'custom', message: 'Network status requires matching observation' });
   }
-  if (value.holdingsComplete && value.networks.some(network => network.status !== 'ok')) context.addIssue({ code: 'custom', message: 'Holdings coverage requires both networks' });
+  if (value.holdingsComplete && value.networks.some(network => network.status !== 'ok')) context.addIssue({ code: 'custom', message: 'Holdings coverage requires Solana' });
   if (value.status === 'ok') {
     if (!value.holdingsComplete || value.balanceUsd === null || value.unpricedAssets !== 0 || value.networks.some(network => network.status !== 'ok') ||
       value.holdings.some(holding => holding.valueUsd === null) || value.tokenHoldings.some(holding => holding.valueUsd === null) ||

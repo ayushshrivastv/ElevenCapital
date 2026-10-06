@@ -1,16 +1,15 @@
 import { createHash } from 'node:crypto';
 import type { Catalog } from './schema.js';
 import { Registry } from './registry.js';
-import { EthereumAddress, isSolanaAddress, PortfolioRequestSchema, PortfolioSchema, type Portfolio, type PortfolioRequest, type PortfolioNetwork, type PortfolioReadWallet } from './portfolio-schema.js';
-import { ARB_USDC, ETH_USDC, SOL_MINT, SOL_USDC, Money, PublicPortfolioUpstream, type AssetBalance, type BalanceRead, type PortfolioAsset, type PortfolioUpstream } from './portfolio-upstream.js';
+import { isSolanaAddress, PortfolioRequestSchema, PortfolioSchema, type Portfolio, type PortfolioRequest, type PortfolioNetwork, type PortfolioReadWallet } from './portfolio-schema.js';
+import { SOL_MINT, SOL_USDC, Money, PublicPortfolioUpstream, type AssetBalance, type BalanceRead, type PortfolioAsset, type PortfolioUpstream } from './portfolio-upstream.js';
 
-const CHAINS: PortfolioNetwork[] = ['SOLANA', 'ETHEREUM', 'ARBITRUM'];
+const CHAINS: PortfolioNetwork[] = ['SOLANA'];
 const ExpectedStockIds = Registry.flatMap(entry => [`backed:${entry.backed.assetId}`, `backpack:${entry.backpack.assetId}`]);
 function tokenSymbol(asset: PortfolioAsset): string {
   if (asset.key === 'SOLANA:native') return 'SOL';
   if (asset.key === `SOLANA:${SOL_MINT}`) return 'WSOL';
-  if (asset.key === `SOLANA:${SOL_USDC}` || asset.key === `ETHEREUM:${ETH_USDC}` || asset.key === `ARBITRUM:${ARB_USDC}`) return 'USDC';
-  if (asset.key === 'ETHEREUM:native' || asset.key === 'ARBITRUM:native') return 'ETH';
+  if (asset.key === `SOLANA:${SOL_USDC}`) return 'USDC';
   if (asset.symbol && asset.chain === 'SOLANA' && asset.address && asset.symbol === `${asset.address.slice(0, 4)}…${asset.address.slice(-4)}`) return asset.symbol;
   throw new Error('Unsupported token identity');
 }
@@ -24,10 +23,6 @@ export function portfolioAssets(catalog: Catalog, expectedIds = ExpectedStockIds
     { key: 'SOLANA:native', chain: 'SOLANA', address: null, stockId: null, decimals: 9, pricing: 'solana' },
     { key: `SOLANA:${SOL_MINT}`, chain: 'SOLANA', address: SOL_MINT, stockId: null, decimals: 9, pricing: 'solana' },
     { key: `SOLANA:${SOL_USDC}`, chain: 'SOLANA', address: SOL_USDC, stockId: null, decimals: 6, pricing: 'solana' },
-    { key: 'ETHEREUM:native', chain: 'ETHEREUM', address: null, stockId: null, decimals: 18, pricing: 'ETH' },
-    { key: `ETHEREUM:${ETH_USDC}`, chain: 'ETHEREUM', address: ETH_USDC, stockId: null, decimals: 6, pricing: 'USDC' },
-    { key: 'ARBITRUM:native', chain: 'ARBITRUM', address: null, stockId: null, decimals: 18, pricing: 'ETH' },
-    { key: `ARBITRUM:${ARB_USDC}`, chain: 'ARBITRUM', address: ARB_USDC, stockId: null, decimals: 6, pricing: 'USDC' },
   ];
   let complete = expectedIds.length > 0;
   const byKey = new Map<string, PortfolioAsset>(assets.map(asset => [asset.key, asset]));
@@ -39,12 +34,12 @@ export function portfolioAssets(catalog: Catalog, expectedIds = ExpectedStockIds
     let supported = 0;
     for (const deployment of stock.deployments) {
       const name = deployment.network.trim().toLowerCase();
-      const chain = name === 'solana' ? 'SOLANA' : name === 'ethereum' ? 'ETHEREUM' : null;
+      const chain = name === 'solana' ? 'SOLANA' : null;
       if (!chain) continue;
-      if (!(chain === 'SOLANA' ? isSolanaAddress(deployment.address) : EthereumAddress.test(deployment.address))) { complete = false; continue; }
-      const address = chain === 'ETHEREUM' ? deployment.address.toLowerCase() : deployment.address;
+      if (!isSolanaAddress(deployment.address)) { complete = false; continue; }
+      const address = deployment.address;
       const key = `${chain}:${address}`;
-      const asset: PortfolioAsset = { key, chain, address, stockId: id, decimals: deployment.decimals, pricing: chain === 'SOLANA' ? 'solana' : 'ethereum' };
+      const asset: PortfolioAsset = { key, chain, address, stockId: id, decimals: deployment.decimals, pricing: 'solana' };
       const previous = byKey.get(key);
       if (previous && (previous.stockId !== id || previous.decimals !== asset.decimals)) { ambiguous.add(key); complete = false; }
       else byKey.set(key, asset);
@@ -63,7 +58,7 @@ export class WalletPortfolioService {
     private readonly now = Date.now, private readonly expectedIds = ExpectedStockIds, private readonly timeoutMs = 25_000) {}
   async portfolio(input: PortfolioRequest): Promise<Portfolio> {
     const request = PortfolioRequestSchema.parse(input);
-    const wallets = request.wallets.map(wallet => ({ ...wallet, address: wallet.chain === 'ETHEREUM' ? wallet.address.toLowerCase() : wallet.address }))
+    const wallets = request.wallets.map(wallet => ({ ...wallet }))
       .sort((a, b) => `${a.chain}:${a.address}`.localeCompare(`${b.chain}:${b.address}`));
     // Never put wallet addresses in URLs, logs, disk, or cache identifiers.
     const key = createHash('sha256').update(JSON.stringify(wallets)).digest('hex');
@@ -97,8 +92,7 @@ export class WalletPortfolioService {
       const solanaIds = catalog.stocks.filter(stock => stock.deployments.some(d => d.network.trim().toLowerCase() === 'solana')).map(stock => stock.id);
       const expectedIds = dynamicPreStocks ? [...new Set([...this.expectedIds, ...solanaIds])] : this.expectedIds;
       // Solana owner-account discovery has constant RPC cost regardless of catalog size.
-      // Keep Ethereum's separately bounded contract registry while discovering every
-      // verified Solana stock the user can buy through the router.
+      // Discover every verified Solana stock the user can buy through the router.
       const scopedCatalog = dynamicPreStocks ? { ...catalog, stocks: catalog.stocks.map(stock =>
         this.expectedIds.includes(stock.id) ? stock : { ...stock, deployments: stock.deployments.filter(d => d.network.trim().toLowerCase() === 'solana') }) } : catalog;
       const { assets, complete: assetsComplete } = portfolioAssets(scopedCatalog, expectedIds);
@@ -109,10 +103,7 @@ export class WalletPortfolioService {
         stock.provider === 'prestocks' && stock.deployments.some(deployment => deployment.network.trim().toLowerCase() === 'solana'));
       const catalogComplete = assetsComplete && preStocksComplete;
       if (assets.length > 3_000) return this.unavailable();
-      const readWallets: PortfolioReadWallet[] = [
-        ...request.wallets,
-        ...request.wallets.filter(wallet => wallet.chain === 'ETHEREUM').map(wallet => ({ chain: 'ARBITRUM' as const, address: wallet.address })),
-      ];
+      const readWallets: PortfolioReadWallet[] = [...request.wallets];
       const responses = await Promise.all(readWallets.map(async wallet => {
         let result: BalanceRead;
         try { result = await this.upstream.balances(wallet, assets.filter(asset => asset.chain === wallet.chain), signal); }
@@ -166,7 +157,10 @@ export class WalletPortfolioService {
             quantity: displayQuantity ?? quantity, valueUsd: value, unitPriceUsd: valid ? raw! : null });
         }
       }
-      const holdingsComplete = catalogComplete && networks.every(network => network.status === 'ok');
+      // A complete native balance and both owner-account scans prove an empty
+      // wallet even when a stock directory is temporarily unavailable.
+      const holdingsComplete = networks.every(network => network.status === 'ok') &&
+        (catalogComplete || positions.size === 0);
       const complete = holdingsComplete && unpricedAssets === 0;
       const anyNetwork = networks.some(network => network.status === 'ok');
       return PortfolioSchema.parse({ schemaVersion: 1, scope: 'supported-wallet-assets', currency: 'USD',

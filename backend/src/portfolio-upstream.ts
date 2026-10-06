@@ -2,37 +2,33 @@ import { z } from 'zod';
 import { Decimal } from 'decimal.js';
 import { limitConcurrency } from './cache.js';
 import { getJson, parseProviderJson } from './http.js';
-import { EthereumAddress, isSolanaAddress, type PortfolioNetwork, type PortfolioReadWallet } from './portfolio-schema.js';
+import { isSolanaAddress, type PortfolioNetwork, type PortfolioReadWallet } from './portfolio-schema.js';
 
 export const Money = Decimal.clone({ precision: 160 });
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 export const SOL_USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-export const ETH_USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
-export const ARB_USDC = '0xaf88d065e77c8cc2239327c5edb3a432268e5831';
 export const TOKEN_PROGRAMS = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'] as const;
 // getGenesisHash returns the full hash, not the truncated 32-character CAIP-2 chain reference.
 // https://namespaces.chainagnostic.org/solana/caip2
 export const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
-export type PortfolioAsset = { key: string; chain: PortfolioNetwork; address: string | null; stockId: string | null; decimals: number | null; pricing: 'solana' | 'ethereum' | 'ETH' | 'USDC'; symbol?: string };
+export type PortfolioAsset = { key: string; chain: PortfolioNetwork; address: string | null; stockId: string | null; decimals: number | null; pricing: 'solana'; symbol?: string };
 export type AssetBalance = { asset: PortfolioAsset; quantity: string; displayQuantity?: string };
 export type BalanceRead = { complete: boolean; observedAt: string | null; balances: AssetBalance[] };
 export type RpcCall = { method: string; params: unknown[] };
 export interface PortfolioTransport {
   rpc(chain: PortfolioNetwork, calls: RpcCall[], signal: AbortSignal): Promise<unknown[]>;
-  json(provider: 'jupiter' | 'coinbase' | 'dexscreener', path: string, query: Record<string, string>, signal: AbortSignal): Promise<unknown>;
+  json(provider: 'jupiter', path: string, query: Record<string, string>, signal: AbortSignal): Promise<unknown>;
 }
 
 const AllowedRpc: Record<PortfolioNetwork, readonly string[]> = {
   SOLANA: ['getGenesisHash', 'getBalance', 'getTokenAccountsByOwner', 'getAccountInfo'],
-  ETHEREUM: ['eth_chainId', 'eth_blockNumber', 'eth_getBalance', 'eth_call'],
-  ARBITRUM: ['eth_chainId', 'eth_blockNumber', 'eth_getBalance', 'eth_call'],
 };
 
 /** Solana's public endpoint accepts these reads individually but rate-limits their JSON-RPC batch. */
 export function rpcRequestGroups(chain: PortfolioNetwork, calls: RpcCall[]): RpcCall[][] {
   if (calls.length < 1 || calls.length > 100) throw new Error('RPC batch exceeded bound');
   if (calls.some(call => !AllowedRpc[chain].includes(call.method))) throw new Error('Only read-only RPC is permitted');
-  return chain === 'SOLANA' ? calls.map(call => [call]) : [calls];
+  return calls.map(call => [call]);
 }
 export interface PortfolioUpstream {
   balances(wallet: PortfolioReadWallet, assets: PortfolioAsset[], signal: AbortSignal): Promise<BalanceRead>;
@@ -89,8 +85,6 @@ async function fetchJson(url: URL, signal: AbortSignal, body?: unknown): Promise
 export function publicPortfolioTransport(env: NodeJS.ProcessEnv = process.env): PortfolioTransport {
   const urls = {
     SOLANA: rpcEndpoint(env.SOLANA_RPC_URL ?? 'https://api.mainnet.solana.com'),
-    ETHEREUM: rpcEndpoint(env.ETHEREUM_RPC_URL ?? 'https://ethereum-rpc.publicnode.com'),
-    ARBITRUM: rpcEndpoint(env.ARBITRUM_RPC_URL ?? 'https://arbitrum-one-rpc.publicnode.com'),
   };
   return {
     async rpc(chain, calls, signal) {
@@ -113,11 +107,7 @@ export function publicPortfolioTransport(env: NodeJS.ProcessEnv = process.env): 
       });
     },
     async json(provider, path, query, signal) {
-      if (provider === 'jupiter') return getJson('jupiter', path, query, signal);
-      const origin = provider === 'coinbase' ? 'https://api.coinbase.com' : 'https://api.dexscreener.com';
-      const valid = provider === 'coinbase' ? /^\/v2\/prices\/(ETH|USDC)-USD\/spot$/ : /^\/tokens\/v1\/ethereum\/0x[0-9a-f]{40}(?:,0x[0-9a-f]{40}){0,29}$/;
-      if (!valid.test(path) || Object.keys(query).length) throw new Error('Invalid public price request');
-      return fetchJson(new URL(path, origin), signal);
+      return getJson(provider, path, query, signal);
     },
   };
 }
@@ -128,10 +118,6 @@ function quantity(raw: unknown, decimals: number): string {
   const amount = new Money(integer).div(new Money(10).pow(decimals));
   if (amount.gt('1e40')) throw new Error('Balance exceeded bound');
   return amount.toFixed();
-}
-function hexInteger(raw: unknown): bigint {
-  if (typeof raw !== 'string' || !/^0x[0-9a-fA-F]{1,64}$/.test(raw)) throw new Error('Invalid RPC integer');
-  return BigInt(raw);
 }
 function positivePrice(raw: unknown): string | null {
   if (typeof raw !== 'string' || raw.length > 100 || !/^(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(raw)) return null;
@@ -152,27 +138,6 @@ export function jupiterPrices(raw: unknown, requested: PortfolioAsset[], now: nu
   }
   return result;
 }
-export function ethereumPrices(raw: unknown, requested: PortfolioAsset[]): Map<string, string> {
-  const rows = z.array(z.unknown()).max(2_000).parse(raw);
-  const result = new Map<string, string>();
-  for (const asset of requested) {
-    let best: { liquidity: Decimal; price: string; pair: string } | undefined;
-    for (const candidate of rows) {
-      const parsed = z.object({ chainId: z.literal('ethereum'), baseToken: z.object({ address: z.string() }),
-        pairAddress: z.string().regex(EthereumAddress), priceUsd: z.unknown(), liquidity: z.object({ usd: z.unknown() }) }).safeParse(candidate);
-      if (!parsed.success || parsed.data.baseToken.address.toLowerCase() !== asset.address) continue;
-      const price = positivePrice(parsed.data.priceUsd);
-      const liquidity = positivePrice(parsed.data.liquidity.usd);
-      if (!price || !liquidity) continue;
-      const value = new Money(liquidity);
-      const pair = parsed.data.pairAddress.toLowerCase();
-      if (!best || value.gt(best.liquidity) || (value.eq(best.liquidity) && pair < best.pair)) best = { liquidity: value, price, pair };
-    }
-    if (best) result.set(asset.key, best.price);
-  }
-  return result;
-}
-
 /** Every operation is an unsigned read. No wallet credential, signing or transaction method exists here. */
 export class PublicPortfolioUpstream implements PortfolioUpstream {
   private readonly priceCache = new Map<string, { at: number; expiresAt: number; value: Map<string, string> }>();
@@ -181,9 +146,7 @@ export class PublicPortfolioUpstream implements PortfolioUpstream {
     private readonly diagnostic?: (value: PortfolioReadDiagnostic) => void) {}
   async balances(wallet: PortfolioReadWallet, assets: PortfolioAsset[], signal: AbortSignal): Promise<BalanceRead> {
     try {
-      if (wallet.chain === 'SOLANA') return await this.solana(wallet, assets, signal);
-      const balances = await this.evm(wallet, assets, signal);
-      return { complete: true, observedAt: new Date(this.now()).toISOString(), balances };
+      return await this.solana(wallet, assets, signal);
     } catch (error) {
       const reason = portfolioReadFailure(error);
       const key = `${wallet.chain}:${reason}`;
@@ -285,42 +248,18 @@ export class PublicPortfolioUpstream implements PortfolioUpstream {
     }
     return { complete, observedAt: balances.length ? new Date(this.now()).toISOString() : null, balances };
   }
-  private async evm(wallet: PortfolioReadWallet, assets: PortfolioAsset[], signal: AbortSignal): Promise<AssetBalance[]> {
-    if (wallet.chain !== 'ETHEREUM' && wallet.chain !== 'ARBITRUM') throw new Error('Unsupported EVM network');
-    const network = wallet.chain;
-    const expectedChainId = network === 'ARBITRUM' ? 42161n : 1n;
-    const [chain, block] = await this.transport.rpc(network, [{ method: 'eth_chainId', params: [] }, { method: 'eth_blockNumber', params: [] }], signal);
-    if (hexInteger(chain) !== expectedChainId || hexInteger(block) < 1n) throw new ReadFailure('wrong_network');
-    const tokenAssets = assets.filter(asset => asset.address !== null);
-    const calls = [{ method: 'eth_getBalance', params: [wallet.address, block] }, ...tokenAssets.flatMap(asset => [
-      { method: 'eth_call', params: [{ to: asset.address, data: `0x70a08231${wallet.address.slice(2).toLowerCase().padStart(64, '0')}` }, block] },
-      { method: 'eth_call', params: [{ to: asset.address, data: '0x313ce567' }, block] },
-    ])];
-    const batches: RpcCall[][] = [];
-    for (let start = 0; start < calls.length; start += 80) batches.push(calls.slice(start, start + 80));
-    const raw = (await Promise.all(batches.map(batch => this.transport.rpc(network, batch, signal)))).flat();
-    const balances = [{ asset: assets.find(asset => asset.address === null)!, quantity: quantity(hexInteger(raw[0]).toString(), 18) }];
-    tokenAssets.forEach((asset, index) => {
-      const decimals = Number(hexInteger(raw[index * 2 + 2]));
-      if (!Number.isSafeInteger(decimals) || decimals > 36 || (asset.decimals !== null && asset.decimals !== decimals)) throw new Error('Token decimal mismatch');
-      balances.push({ asset, quantity: quantity(hexInteger(raw[index * 2 + 1]).toString(), decimals) });
-    });
-    return balances;
-  }
   async prices(assets: PortfolioAsset[], signal: AbortSignal): Promise<Map<string, string>> {
     const result = new Map<string, string>();
-    const groups: PortfolioAsset[][] = [assets.filter(asset => asset.pricing === 'solana'), assets.filter(asset => asset.pricing === 'ethereum'),
-      assets.filter(asset => asset.pricing === 'ETH'), assets.filter(asset => asset.pricing === 'USDC')];
+    const groups: PortfolioAsset[][] = [assets.filter(asset => asset.pricing === 'solana')];
     await Promise.all(groups.filter(group => group.length).map(async group => {
       const key = group.map(asset => asset.key).sort().join(',');
       const cached = this.priceCache.get(key);
       if (cached && this.now() >= cached.at && this.now() < cached.expiresAt) { for (const entry of cached.value) result.set(...entry); return; }
       try {
-        let values: Map<string, string>;
+        let values = new Map<string, string>();
         let sourceExpiresAt = Number.POSITIVE_INFINITY;
         const kind = group[0]!.pricing;
         if (kind === 'solana') {
-          values = new Map();
           for (let start = 0; start < group.length; start += 30) {
             const batch = group.slice(start, start + 30);
             const raw = await this.transport.json('jupiter', '/tokens/v2/search',
@@ -332,17 +271,6 @@ export class PublicPortfolioUpstream implements PortfolioUpstream {
               sourceExpiresAt = Math.min(sourceExpiresAt, Date.parse(String(row.updatedAt)) + 300_000);
             }
           }
-        } else if (kind === 'ethereum') {
-          values = new Map();
-          for (let start = 0; start < group.length; start += 30) {
-            const batch = group.slice(start, start + 30);
-            for (const entry of ethereumPrices(await this.transport.json('dexscreener', `/tokens/v1/ethereum/${batch.map(asset => asset.address).join(',')}`, {}, signal), batch)) values.set(...entry);
-          }
-        } else {
-          const raw = z.object({ data: z.object({ currency: z.literal('USD'), amount: z.unknown(), base: z.string().optional() }) }).parse(
-            await this.transport.json('coinbase', `/v2/prices/${kind}-USD/spot`, {}, signal));
-          const price = positivePrice(raw.data.amount);
-          values = price && (raw.data.base === undefined || raw.data.base === kind) ? new Map(group.map(asset => [asset.key, price])) : new Map();
         }
         if (this.priceCache.size >= 128) this.priceCache.delete(this.priceCache.keys().next().value!);
         const at = this.now();
