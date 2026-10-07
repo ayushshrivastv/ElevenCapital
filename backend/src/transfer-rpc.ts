@@ -9,9 +9,6 @@ export interface TransferRpc {
 }
 
 const Allowed: Record<TransferChain, ReadonlySet<string>> = {
-  ETHEREUM: new Set(['eth_chainId', 'eth_getBlockByNumber', 'eth_getTransactionCount', 'eth_getBalance', 'eth_getCode',
-    'eth_call', 'eth_estimateGas', 'eth_maxPriorityFeePerGas', 'eth_gasPrice', 'eth_blockNumber',
-    'eth_getTransactionByHash', 'eth_getTransactionReceipt']),
   SOLANA: new Set(['getGenesisHash', 'getBalance', 'getAccountInfo', 'getLatestBlockhash', 'getFeeForMessage', 'simulateTransaction',
     'getSignatureStatuses', 'getTransaction']),
 };
@@ -44,7 +41,6 @@ async function readBounded(response: Response): Promise<unknown> {
 export function publicTransferRpc(env: NodeJS.ProcessEnv = process.env): TransferRpc {
   const endpoints = {
     SOLANA: rpcEndpoint(env.SOLANA_RPC_URL ?? 'https://api.mainnet.solana.com'),
-    ETHEREUM: rpcEndpoint(env.ETHEREUM_RPC_URL ?? 'https://ethereum-rpc.publicnode.com'),
   };
   return {
     async call(chain, method, params, signal) {

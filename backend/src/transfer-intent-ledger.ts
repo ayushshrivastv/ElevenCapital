@@ -9,8 +9,8 @@ import type { TransferIntentCommit, TransferIntentMutationResponse, TransferInte
 const IntentState = z.enum(['prepared', 'committed', 'broadcast', 'unknown', 'pending', 'confirmed', 'finalized', 'failed', 'released']);
 const StoredIntent = z.object({
   operationId: z.uuid(), subject: z.string().min(1).max(200), walletId: z.string().min(1).max(200),
-  chain: z.enum(['ETHEREUM', 'SOLANA']), sender: z.string(), recipient: z.string(),
-  assetId: z.enum(['ETHEREUM:native', 'ETHEREUM:USDC', 'SOLANA:native', 'SOLANA:USDC']),
+  chain: z.literal('SOLANA'), sender: z.string(), recipient: z.string(),
+  assetId: z.enum(['SOLANA:native', 'SOLANA:USDC']),
   baseUnits: z.string().regex(/^[1-9]\d*$/), state: IntentState, transactionId: z.string().nullable(),
   preparedAt: z.string().datetime(), expiresAt: z.string().datetime(), updatedAt: z.string().datetime(),
   finalized: z.boolean(),

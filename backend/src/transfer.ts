@@ -1,19 +1,12 @@
 import { z } from 'zod';
-import { keccak256Hex } from './keccak.js';
-import { ETH_USDC, MAINNET_GENESIS, SOL_USDC } from './portfolio-upstream.js';
+import { MAINNET_GENESIS, SOL_USDC } from './portfolio-upstream.js';
 import { TransferPreparationSchema, TransferRequestSchema, type TransferPreparation, type TransferRequest } from './transfer-schema.js';
 import { publicTransferRpc, type TransferRpc } from './transfer-rpc.js';
 
 const U64_MAX = (1n << 64n) - 1n;
-const U256_MAX = (1n << 256n) - 1n;
 // These are deliberate product safety ceilings, not estimates. A single RPC is
 // allowed to make a transfer unavailable during an extreme fee event, but it is
 // never allowed to make the wallet sign an economically unbounded fee quote.
-const MAX_ETH_NATIVE_GAS = 50_000n;
-const MAX_ETH_USDC_GAS = 150_000n;
-const MAX_ETH_PRIORITY_FEE_PER_GAS = 10_000_000_000n; // 10 gwei
-const MAX_ETH_FEE_PER_GAS = 2_000_000_000_000n; // 2,000 gwei
-const MAX_ETH_TOTAL_FEE = 50_000_000_000_000_000n; // 0.05 ETH
 const MAX_SOLANA_TRANSFER_FEE = 5_000_000n; // 0.005 SOL
 const SYSTEM_PROGRAM = '11111111111111111111111111111111';
 const INCINERATOR = '1nc1nerator11111111111111111111111111111111';
@@ -27,8 +20,6 @@ export class TransferPreparationError extends Error {
 }
 
 export const Assets = {
-  'ETHEREUM:native': { id: 'ETHEREUM:native', symbol: 'ETH', kind: 'native', address: null, decimals: 18 },
-  'ETHEREUM:USDC': { id: 'ETHEREUM:USDC', symbol: 'USDC', kind: 'erc20', address: ETH_USDC, decimals: 6 },
   'SOLANA:native': { id: 'SOLANA:native', symbol: 'SOL', kind: 'native', address: null, decimals: 9 },
 } as const;
 
@@ -43,36 +34,11 @@ function exactBaseUnits(amount: string, decimals: number, maximum: bigint): stri
   return integer.toString();
 }
 
-function hex(value: bigint): `0x${string}` { return `0x${value.toString(16)}`; }
-function parseHex(raw: unknown, maximum = U256_MAX): bigint {
-  if (typeof raw !== 'string' || !/^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/.test(raw)) throw new Error('Invalid RPC integer');
-  const value = BigInt(raw);
-  if (value > maximum) throw new Error('RPC integer exceeded bound');
-  return value;
-}
-function parseDataWord(raw: unknown, maximum = U256_MAX): bigint {
-  if (typeof raw !== 'string' || !/^0x[0-9a-fA-F]{1,64}$/.test(raw)) throw new Error('Invalid RPC data word');
-  const value = BigInt(raw);
-  if (value > maximum) throw new Error('RPC data word exceeded bound');
-  return value;
-}
 function unsigned(raw: unknown, maximum = U64_MAX): bigint {
   if ((typeof raw !== 'string' && typeof raw !== 'number') || !/^(?:0|[1-9]\d*)$/.test(String(raw))) throw new Error('Invalid RPC integer');
   const value = BigInt(raw);
   if (value > maximum) throw new Error('RPC integer exceeded bound');
   return value;
-}
-
-export function checksumEthereumAddress(value: string): string {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(value)) throw new TransferPreparationError('invalid_address', 400, 'Ethereum address is invalid.');
-  const lower = value.slice(2).toLowerCase();
-  const digest = keccak256Hex(lower);
-  let result = '0x';
-  for (let index = 0; index < lower.length; index++) result += Number.parseInt(digest[index]!, 16) >= 8 ? lower[index]!.toUpperCase() : lower[index];
-  const letters = value.slice(2).replace(/[0-9]/g, '');
-  const mixed = letters !== letters.toLowerCase() && letters !== letters.toUpperCase();
-  if (mixed && result !== value) throw new TransferPreparationError('invalid_address', 400, 'Mixed-case Ethereum address has an invalid EIP-55 checksum.');
-  return result;
 }
 
 const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -100,18 +66,6 @@ export function encodeBase58(value: Uint8Array): string {
   let leading = 0;
   while (leading < value.length && value[leading] === 0) leading++;
   return '1'.repeat(leading) + encoded;
-}
-
-function validateEthereumParties(sender: string, recipient: string): { sender: string; recipient: string } {
-  const parties = { sender: checksumEthereumAddress(sender), recipient: checksumEthereumAddress(recipient) };
-  if (sender.toLowerCase() === recipient.toLowerCase()) throw new TransferPreparationError('unsafe_recipient', 422, 'Sender and recipient must be different.');
-  const recipientValue = BigInt(recipient.toLowerCase());
-  if (recipientValue <= 0xffffn || recipient.toLowerCase() === '0x000000000000000000000000000000000000dead' ||
-    recipient.toLowerCase() === '0xdead000000000000000000000000000000000000') {
-    throw new TransferPreparationError('unsafe_recipient', 422, 'Recipient is a zero, burn, or system address.');
-  }
-  if (BigInt(sender.toLowerCase()) <= 0xffffn) throw new TransferPreparationError('invalid_address', 400, 'Sender is not a usable externally owned address.');
-  return parties;
 }
 
 function validateSolanaParties(sender: string, recipient: string): void {
@@ -164,8 +118,6 @@ export function decodeSolanaTransfer(raw: Uint8Array): { sender: string; recipie
   return { sender: keys[0]!, recipient: keys[1]!, recentBlockhash: encodeBase58(blockhash), lamports: lamports.toString() };
 }
 
-// JSON-RPC defines an account without bytecode as exactly `0x`; `0x00` is real STOP bytecode.
-function isEmptyCode(raw: unknown): boolean { return raw === '0x'; }
 function rpcFailure(error: unknown): never {
   if (error instanceof TransferPreparationError) throw error;
   if (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name)) throw new TransferPreparationError('rpc_unavailable', 503, 'Mainnet RPC timed out. Try again safely.');
@@ -195,94 +147,10 @@ export class TransferPreparationService {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const result = parsed.data.chain === 'ETHEREUM'
-        ? await this.ethereum(parsed.data, controller.signal)
-        : await this.solana(parsed.data, controller.signal);
+      const result = await this.solana(parsed.data, controller.signal);
       return TransferPreparationSchema.parse(result);
     } catch (error) { return rpcFailure(error); }
     finally { clearTimeout(timeout); this.active--; }
-  }
-
-  private async ethereum(input: TransferRequest, signal: AbortSignal): Promise<TransferPreparation> {
-    const parties = validateEthereumParties(input.sender, input.recipient);
-    const asset = input.assetId === 'ETHEREUM:native' ? Assets['ETHEREUM:native'] : Assets['ETHEREUM:USDC'];
-    const amount = BigInt(exactBaseUnits(input.amount, asset.decimals, U256_MAX));
-    const chain = parseHex(await this.rpc.call('ETHEREUM', 'eth_chainId', [], signal));
-    if (chain !== 1n) throw new TransferPreparationError('wrong_network', 503, 'Configured Ethereum RPC is not mainnet.');
-    const rawBlock = await this.rpc.call('ETHEREUM', 'eth_getBlockByNumber', ['latest', false], signal);
-    const block = z.object({ number: z.unknown(), timestamp: z.unknown(), baseFeePerGas: z.unknown().optional() }).passthrough().parse(rawBlock);
-    const blockNumber = parseHex(block.number, U64_MAX); const blockTime = Number(parseHex(block.timestamp, BigInt(Number.MAX_SAFE_INTEGER))) * 1_000;
-    if (blockNumber < 1n || blockTime < this.now() - 300_000 || blockTime > this.now() + 30_000) {
-      throw new TransferPreparationError('stale_chain_data', 503, 'Ethereum mainnet data is not fresh enough to prepare a transfer.');
-    }
-    const blockTag = hex(blockNumber);
-    const [nonceRaw, nativeRaw, senderCode, recipientCode] = await Promise.all([
-      this.rpc.call('ETHEREUM', 'eth_getTransactionCount', [parties.sender, 'pending'], signal),
-      this.rpc.call('ETHEREUM', 'eth_getBalance', [parties.sender, blockTag], signal),
-      this.rpc.call('ETHEREUM', 'eth_getCode', [parties.sender, blockTag], signal),
-      this.rpc.call('ETHEREUM', 'eth_getCode', [parties.recipient, blockTag], signal),
-    ]);
-    if (!isEmptyCode(senderCode)) throw new TransferPreparationError('invalid_address', 400, 'Sender must be the Privy externally owned wallet.');
-    if (!isEmptyCode(recipientCode)) throw new TransferPreparationError('unsafe_recipient', 422, 'Recipient is a contract address and requires a contract-specific flow.');
-    const nonce = parseHex(nonceRaw, U64_MAX); const nativeBalance = parseHex(nativeRaw);
-    let assetBalance = nativeBalance;
-    let to = parties.recipient; let value = amount; let data = '0x';
-    if (asset.id === 'ETHEREUM:USDC') {
-      const [code, decimalsRaw, balanceRaw] = await Promise.all([
-        this.rpc.call('ETHEREUM', 'eth_getCode', [ETH_USDC, blockTag], signal),
-        this.rpc.call('ETHEREUM', 'eth_call', [{ to: ETH_USDC, data: '0x313ce567' }, blockTag], signal),
-        this.rpc.call('ETHEREUM', 'eth_call', [{ to: ETH_USDC, data: `0x70a08231${parties.sender.slice(2).toLowerCase().padStart(64, '0')}` }, blockTag], signal),
-      ]);
-      if (isEmptyCode(code) || parseDataWord(decimalsRaw) !== 6n) throw new TransferPreparationError('wrong_network', 503, 'Canonical Ethereum USDC identity could not be verified.');
-      assetBalance = parseDataWord(balanceRaw);
-      to = ETH_USDC; value = 0n;
-      data = `0xa9059cbb${parties.recipient.slice(2).toLowerCase().padStart(64, '0')}${amount.toString(16).padStart(64, '0')}`;
-    }
-    if (assetBalance < amount) throw new TransferPreparationError('insufficient_asset_balance', 422, `Insufficient ${asset.symbol} balance.`);
-    const draft = { from: parties.sender, to, value: hex(value), data };
-    const gasCeiling = asset.kind === 'native' ? MAX_ETH_NATIVE_GAS : MAX_ETH_USDC_GAS;
-    const gas = parseHex(await this.rpc.call('ETHEREUM', 'eth_estimateGas', [draft, 'pending'], signal), gasCeiling);
-    if (gas < 21_000n) throw new Error('Invalid gas estimate');
-    let type: '0x0' | '0x2'; let estimatedPrice: bigint; let maxPrice: bigint;
-    let gasPrice: string | undefined; let maxFeePerGas: string | undefined; let maxPriorityFeePerGas: string | undefined;
-    if (block.baseFeePerGas !== undefined) {
-      const baseFee = parseHex(block.baseFeePerGas);
-      let priority: bigint;
-      try { priority = parseHex(await this.rpc.call('ETHEREUM', 'eth_maxPriorityFeePerGas', [], signal)); }
-      catch {
-        const freshGasPrice = parseHex(await this.rpc.call('ETHEREUM', 'eth_gasPrice', [], signal));
-        priority = freshGasPrice > baseFee ? freshGasPrice - baseFee : 0n;
-      }
-      if (baseFee <= 0n || baseFee > MAX_ETH_FEE_PER_GAS || priority <= 0n ||
-        priority > MAX_ETH_PRIORITY_FEE_PER_GAS) throw new Error('Fee quote exceeded safety ceiling');
-      type = '0x2'; estimatedPrice = baseFee + priority; maxPrice = baseFee * 2n + priority;
-      maxFeePerGas = hex(maxPrice); maxPriorityFeePerGas = hex(priority);
-    } else {
-      type = '0x0'; estimatedPrice = maxPrice = parseHex(await this.rpc.call('ETHEREUM', 'eth_gasPrice', [], signal));
-      gasPrice = hex(maxPrice);
-    }
-    if (estimatedPrice <= 0n || maxPrice <= 0n || maxPrice < estimatedPrice ||
-      estimatedPrice > MAX_ETH_FEE_PER_GAS || maxPrice > MAX_ETH_FEE_PER_GAS) {
-      throw new Error('Fee quote exceeded safety ceiling');
-    }
-    const estimatedFee = gas * estimatedPrice; const maxFee = gas * maxPrice;
-    if (maxFee > MAX_ETH_TOTAL_FEE) throw new Error('Total fee exceeded safety ceiling');
-    if (nativeBalance < maxFee + (asset.kind === 'native' ? amount : 0n)) throw new TransferPreparationError('insufficient_fee_balance', 422, 'Insufficient ETH for the transfer and its maximum network fee.');
-    const transaction = { chainId: '0x1' as const, from: parties.sender, to, nonce: hex(nonce), gas: hex(gas), value: hex(value), data,
-      type, ...(gasPrice ? { gasPrice } : {}), ...(maxFeePerGas ? { maxFeePerGas, maxPriorityFeePerGas } : {}) };
-    const simulation = await this.rpc.call('ETHEREUM', 'eth_call', [transaction, 'pending'], signal);
-    let simulationOk = simulation === '0x' && asset.kind === 'native';
-    if (asset.kind === 'erc20') {
-      try { simulationOk = parseDataWord(simulation) === 1n; } catch { simulationOk = false; }
-    }
-    if (!simulationOk) {
-      throw new TransferPreparationError('simulation_failed', 422, 'Transfer simulation failed. No transaction was created.');
-    }
-    const preparedAt = new Date(this.now()).toISOString();
-    return { schemaVersion: 1, operationId: input.operationId, chain: 'ETHEREUM', caip2: 'eip155:1', asset,
-      sender: parties.sender, recipient: parties.recipient, amount: input.amount, baseUnits: amount.toString(), balanceBaseUnits: assetBalance.toString(),
-      estimatedFeeBaseUnits: estimatedFee.toString(), maxFeeBaseUnits: maxFee.toString(), preparedAt,
-      expiresAt: new Date(this.now() + 60_000).toISOString(), observedBlock: blockNumber.toString(), transaction };
   }
 
   private async solana(input: TransferRequest, signal: AbortSignal): Promise<TransferPreparation> {

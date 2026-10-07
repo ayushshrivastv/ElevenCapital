@@ -16,9 +16,9 @@ const SUBJECT = 'did:privy:test-user-one';
 const PRINCIPAL: PrivyPrincipal = { subject: SUBJECT, sessionId: 'session-one' };
 const OPERATION = '5a40fc8d-10d4-4da9-b44f-b4e28ef917cc';
 const SECOND_OPERATION = '37a9b840-3e9d-4ed5-a22f-c886327d0920';
-const WALLET = 'wallet-ethereum-one';
-const SENDER = '0x1111111111111111111111111111111111111111';
-const RECIPIENT = '0x2222222222222222222222222222222222222222';
+const WALLET = 'wallet-solana-one';
+const SENDER = '9xQeWvG816bUx9EPf29DqVU1vDUbtWKVnwG1UxVajZ5J';
+const RECIPIENT = 'Vote111111111111111111111111111111111111111';
 
 const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
 const jwk = publicKey.export({ format: 'jwk' });
@@ -33,23 +33,22 @@ function token(overrides: Record<string, unknown> = {}, header: Record<string, u
 }
 
 function request(operationId = OPERATION): TransferRequest {
-  return { schemaVersion: 1, operationId, walletId: WALLET, chain: 'ETHEREUM', sender: SENDER,
-    recipient: RECIPIENT, assetId: 'ETHEREUM:native', amount: '0.1' };
+  return { schemaVersion: 1, operationId, walletId: WALLET, chain: 'SOLANA', sender: SENDER,
+    recipient: RECIPIENT, assetId: 'SOLANA:native', amount: '0.1' };
 }
 function prepared(operationId = OPERATION): TransferPreparation {
   return {
-    schemaVersion: 1, operationId, chain: 'ETHEREUM', caip2: 'eip155:1',
-    asset: { id: 'ETHEREUM:native', symbol: 'ETH', kind: 'native', address: null, decimals: 18 },
-    sender: SENDER, recipient: RECIPIENT, amount: '0.1', baseUnits: '100000000000000000',
-    balanceBaseUnits: '1000000000000000000', estimatedFeeBaseUnits: '1', maxFeeBaseUnits: '2',
-    preparedAt: new Date(NOW_MS).toISOString(), expiresAt: new Date(NOW_MS + 120_000).toISOString(), observedBlock: '1',
-    transaction: { chainId: '0x1', from: SENDER, to: RECIPIENT, nonce: '0x0', gas: '0x5208',
-      value: '0x16345785d8a0000', data: '0x', type: '0x2', maxFeePerGas: '0x1', maxPriorityFeePerGas: '0x1' },
+    schemaVersion: 1, operationId, chain: 'SOLANA', caip2: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+    asset: { id: 'SOLANA:native', symbol: 'SOL', kind: 'native', address: null, decimals: 9 },
+    sender: SENDER, recipient: RECIPIENT, amount: '0.1', baseUnits: '100000000',
+    balanceBaseUnits: '1000000000', estimatedFeeBaseUnits: '5000', maxFeeBaseUnits: '5000',
+    preparedAt: new Date(NOW_MS).toISOString(), expiresAt: new Date(NOW_MS + 120_000).toISOString(), observedSlot: '1',
+    recentBlockhash: SENDER, lastValidBlockHeight: '100', transactionBase64: 'AQID', encoding: 'base64',
   };
 }
 function identity(operationId = OPERATION) {
-  return { schemaVersion: 1 as const, operationId, walletId: WALLET, chain: 'ETHEREUM' as const, sender: SENDER,
-    recipient: RECIPIENT, assetId: 'ETHEREUM:native' as const, baseUnits: '100000000000000000' };
+  return { schemaVersion: 1 as const, operationId, walletId: WALLET, chain: 'SOLANA' as const, sender: SENDER,
+    recipient: RECIPIENT, assetId: 'SOLANA:native' as const, baseUnits: '100000000' };
 }
 
 test('Privy bearer verifier accepts exact ES256 claims and rejects missing, invalid, expired and other-audience tokens', async () => {
