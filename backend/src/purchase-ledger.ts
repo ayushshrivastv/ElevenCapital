@@ -126,9 +126,10 @@ export class PurchaseLedger {
       const current = this.requirePurchase(rows, principal, quoteId);
       const action = current.quote.actions.find(value => value.id === actionId);
       if (!action) throw new PurchaseLedgerError('quote_state_invalid', 422, 'The submitted action is not part of this quote.');
-      const expectedEvm = action.network !== 'SOLANA';
-      if (expectedEvm !== /^0x[0-9a-fA-F]{64}$/.test(transactionId)) throw new PurchaseLedgerError('quote_state_invalid', 422,
-        'The transaction identifier does not match the action network.');
+      try { decodeSignature(transactionId); } catch {
+        throw new PurchaseLedgerError('quote_state_invalid', 422,
+          'The transaction identifier is not a valid Solana signature.');
+      }
       const prior = current.submitted.find(value => value.actionId === actionId);
       if (prior) {
         if (prior.transactionId !== transactionId) throw new PurchaseLedgerError('quote_conflict', 409,

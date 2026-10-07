@@ -1,20 +1,17 @@
 import { JupiterSwapV2, JupiterTradeError, type JupiterOrderQuote, type JupiterOrderRequest } from './jupiter-trade.js';
-import { LiFiClient, LiFiError, type LiFiExecutionStatus, type LiFiQuoteRequest, type LiFiRouteQuote,
-  type PurchaseRouter, type PurchaseRouteStatusRequest } from './lifi.js';
 import { publicPurchaseRpc, SOL_NATIVE, type JsonRpc } from './purchase-chain.js';
-import { RelayClient, RELAY_ANTHROPIC_MINT, RELAY_ANTHROPIC_TOOL } from './relay.js';
+import { PurchaseRouteError, type PurchaseExecutionStatus, type PurchaseRouteQuoteRequest, type PurchaseRouteQuote,
+  type PurchaseRouter, type PurchaseRouteStatusRequest } from './purchase-router.js';
 import { encodeBase58 } from './transfer.js';
 import { SolanaSwapValidationError, validateSolanaSwap, type SolanaSwapRpc, type ValidatedSolanaSwap } from './solana-swap-validation.js';
 
 const SOL_CHAIN = '1151111081099710';
 const WSOL = 'So11111111111111111111111111111111111111112';
-const ETHEREUM_CHAIN = '1';
-const ARBITRUM_CHAIN = '42161';
 export const JUPITER_PURCHASE_TOOL = 'eleven-jupiter-metis';
 type OrderClient = Pick<JupiterSwapV2, 'quote'>;
 type Validator = (quote: JupiterOrderQuote, rpc: SolanaSwapRpc) => Promise<ValidatedSolanaSwap>;
-const pending = (message: string | null = null): LiFiExecutionStatus => ({ state: 'PENDING', receivedBaseUnits: null, message });
-function unsafe(message: string): never { throw new LiFiError('unsafe_router_response', message); }
+const pending = (message: string | null = null): PurchaseExecutionStatus => ({ state: 'PENDING', receivedBaseUnits: null, message });
+function unsafe(message: string): never { throw new PurchaseRouteError('unsafe_router_response', message); }
 function object(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return unsafe('The confirmed swap observation has invalid fields.');
   return value as Record<string, unknown>;
@@ -54,25 +51,14 @@ function tokenReceipt(meta: Record<string, unknown>, mint: string, recipient: st
   return found ? sum : null;
 }
 
-/** Only independently validated same-chain swaps and pinned Relay
- * Ethereum or Arbitrum to Anthropic routes can execute. This class never signs or broadcasts. */
+/** Only independently validated same-chain Solana swaps can execute. This class never signs or broadcasts. */
 export class JupiterPurchaseRouter implements PurchaseRouter {
   constructor(private readonly rpc: JsonRpc = publicPurchaseRpc(), private readonly orders: OrderClient = new JupiterSwapV2(),
-    private readonly fallback: PurchaseRouter = new LiFiClient(), private readonly validate: Validator = validateSolanaSwap,
-    private readonly now: () => number = Date.now, private readonly relay: Pick<RelayClient, 'quote' | 'status'> = new RelayClient()) {}
+    private readonly validate: Validator = validateSolanaSwap, private readonly now: () => number = Date.now) {}
 
-  async quote(request: LiFiQuoteRequest): Promise<LiFiRouteQuote> {
-    if ((((request.source.id === 'ARBITRUM:USDC' || request.source.id === 'ARBITRUM:ETH') &&
-        request.source.chainId === ARBITRUM_CHAIN) ||
-      (request.source.id === 'ETHEREUM:ETH' && request.source.chainId === ETHEREUM_CHAIN)) &&
-      request.destination.network === 'SOLANA' && request.destination.chainId === SOL_CHAIN &&
-      request.destination.address === RELAY_ANTHROPIC_MINT) {
-      return this.relay.quote({ sourceAssetId: request.source.id, fromAddress: request.fromAddress, recipientAddress: request.toAddress,
-        amountBaseUnits: request.amountBaseUnits, slippageBps: request.slippageBps });
-    }
+  async quote(request: PurchaseRouteQuoteRequest): Promise<PurchaseRouteQuote> {
     if (request.source.network !== 'SOLANA' || request.destination.network !== 'SOLANA') {
-      // A future validator may support these routes. Delegation alone never establishes execution eligibility.
-      const preview = await this.fallback.quote(request); return { ...preview, executionValidated: false };
+      throw new PurchaseRouteError('route_unavailable', 'Only same-chain Solana routes are supported.');
     }
     if (request.source.chainId !== SOL_CHAIN || request.destination.chainId !== SOL_CHAIN || request.fromAddress !== request.toAddress) {
       return unsafe('A same-chain stock trade must settle to the same connected Solana wallet.');
@@ -84,7 +70,7 @@ export class JupiterPurchaseRouter implements PurchaseRouter {
       slippageBps: request.slippageBps, taker: request.fromAddress, excludeRouters: ['jupiterz', 'dflow', 'okx'] };
     try {
       const quote = await this.orders.quote(input);
-      if (!quote.transactionBase64 || !quote.executableTransactionAvailable) throw new LiFiError('route_unavailable', quote.buildErrorReason ?? 'No signable route is currently available for this stock.');
+      if (!quote.transactionBase64 || !quote.executableTransactionAvailable) throw new PurchaseRouteError('route_unavailable', quote.buildErrorReason ?? 'No signable route is currently available for this stock.');
       const validated = await this.validate(quote, { call: (method, params) => this.rpc.call('SOLANA', method, params) });
       if (validated.transactionBase64 !== quote.transactionBase64) return unsafe('The validated transaction differs from the quoted transaction.');
       return { routeId: quote.requestId, tool: JUPITER_PURCHASE_TOOL, sourceChainId: SOL_CHAIN, destinationChainId: SOL_CHAIN,
@@ -97,33 +83,22 @@ export class JupiterPurchaseRouter implements PurchaseRouter {
         transaction: { kind: 'SOLANA', transactionBase64: validated.transactionBase64,
           minContextSlot: String(validated.simulationSlot), lastValidBlockHeight: validated.lastValidBlockHeight } };
     } catch (error) {
-      if (error instanceof LiFiError) throw error;
+      if (error instanceof PurchaseRouteError) throw error;
       if (error instanceof JupiterTradeError) {
         const code = error.code === 'unsafe_router_response' || error.code === 'invalid_request' ? 'unsafe_router_response' :
           ['route_unavailable', 'quote_expired'].includes(error.code) ? 'route_unavailable' : 'router_unavailable';
-        throw new LiFiError(code, error.message);
+        throw new PurchaseRouteError(code, error.message);
       }
       if (error instanceof SolanaSwapValidationError) {
         const code = error.code === 'rpc_unavailable' ? 'router_unavailable' : error.code === 'transaction_mismatch' ? 'unsafe_router_response' : 'route_unavailable';
-        throw new LiFiError(code, error.message);
+        throw new PurchaseRouteError(code, error.message);
       }
-      throw new LiFiError('router_unavailable', 'The swap could not be independently verified. No wallet action was requested.');
+      throw new PurchaseRouteError('router_unavailable', 'The swap could not be independently verified. No wallet action was requested.');
     }
   }
 
-  async status(request: PurchaseRouteStatusRequest): Promise<LiFiExecutionStatus> {
-    if (request.tool === RELAY_ANTHROPIC_TOOL) {
-      if (![ETHEREUM_CHAIN, ARBITRUM_CHAIN].includes(request.fromChainId) || request.toChainId !== SOL_CHAIN ||
-        request.destinationAddress !== RELAY_ANTHROPIC_MINT || !request.routeId ||
-        !request.recipientAddress || !request.minimumReceivedBaseUnits) {
-        return unsafe('The Relay status request does not match the reviewed Anthropic route.');
-      }
-      return this.relay.status({ sourceChainId: request.fromChainId as '1' | '42161',
-        requestId: request.routeId, transactionId: request.transactionId,
-        recipientAddress: request.recipientAddress, destinationMint: request.destinationAddress,
-        minimumReceivedBaseUnits: request.minimumReceivedBaseUnits });
-    }
-    if (request.tool !== JUPITER_PURCHASE_TOOL) return this.fallback.status(request);
+  async status(request: PurchaseRouteStatusRequest): Promise<PurchaseExecutionStatus> {
+    if (request.tool !== JUPITER_PURCHASE_TOOL) return unsafe('The purchase status tool is not supported.');
     if (request.fromChainId !== SOL_CHAIN || request.toChainId !== SOL_CHAIN || !request.expectedTransactionBase64 ||
       !request.destinationAddress || !request.recipientAddress || !request.minimumReceivedBaseUnits || !/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(request.transactionId)) {
       return unsafe('The swap status request is missing its reviewed transaction and recipient.');

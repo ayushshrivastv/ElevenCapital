@@ -9,10 +9,7 @@ import { readSolanaMintUiMultiplier } from './solana-swap-validation.js';
 
 const Units = Decimal.clone({ precision: 160 });
 
-export const PURCHASE_CHAIN_IDS: Record<PurchaseNetwork, string> = {
-  ETHEREUM: '1', BASE: '8453', ARBITRUM: '42161', SOLANA: '1151111081099710',
-};
-export const EVM_NATIVE = '0x0000000000000000000000000000000000000000';
+export const PURCHASE_CHAIN_IDS: Record<PurchaseNetwork, string> = { SOLANA: '1151111081099710' };
 export const SOL_NATIVE = '11111111111111111111111111111111';
 
 export interface PaymentAssetDefinition {
@@ -22,12 +19,6 @@ export interface PaymentAssetDefinition {
 }
 
 export const PAYMENT_ASSETS: readonly PaymentAssetDefinition[] = [
-  { id: 'ETHEREUM:ETH', symbol: 'ETH', name: 'Ether', network: 'ETHEREUM', chainId: '1', address: EVM_NATIVE, decimals: 18, walletChain: 'ETHEREUM' },
-  { id: 'ETHEREUM:USDC', symbol: 'USDC', name: 'USD Coin', network: 'ETHEREUM', chainId: '1', address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', decimals: 6, walletChain: 'ETHEREUM' },
-  { id: 'BASE:ETH', symbol: 'ETH', name: 'Ether on Base', network: 'BASE', chainId: '8453', address: EVM_NATIVE, decimals: 18, walletChain: 'ETHEREUM' },
-  { id: 'BASE:USDC', symbol: 'USDC', name: 'USD Coin on Base', network: 'BASE', chainId: '8453', address: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', decimals: 6, walletChain: 'ETHEREUM' },
-  { id: 'ARBITRUM:ETH', symbol: 'ETH', name: 'Ether on Arbitrum', network: 'ARBITRUM', chainId: '42161', address: EVM_NATIVE, decimals: 18, walletChain: 'ETHEREUM' },
-  { id: 'ARBITRUM:USDC', symbol: 'USDC', name: 'USD Coin on Arbitrum', network: 'ARBITRUM', chainId: '42161', address: '0xaf88d065e77c8cc2239327c5edb3a432268e5831', decimals: 6, walletChain: 'ETHEREUM' },
   { id: 'SOLANA:SOL', symbol: 'SOL', name: 'Solana', network: 'SOLANA', chainId: '1151111081099710', address: SOL_NATIVE, decimals: 9, walletChain: 'SOLANA' },
   { id: 'SOLANA:USDC', symbol: 'USDC', name: 'USD Coin on Solana', network: 'SOLANA', chainId: '1151111081099710', address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6, walletChain: 'SOLANA' },
 ] as const;
@@ -37,7 +28,7 @@ export function paymentAssetDefinition(id: string): PaymentAssetDefinition | und
 }
 
 export function walletForNetwork(wallets: readonly PurchaseWallet[], network: PurchaseNetwork): PurchaseWallet | undefined {
-  return wallets.find(wallet => wallet.chain === (network === 'SOLANA' ? 'SOLANA' : 'ETHEREUM'));
+  return network === 'SOLANA' ? wallets.find(wallet => wallet.chain === 'SOLANA') : undefined;
 }
 
 export function humanAmount(baseUnits: string, decimals: number): string {
@@ -55,9 +46,6 @@ export function displayAmount(baseUnits: string, decimals: number, multiplier = 
 
 export function normalizeNetwork(value: string): PurchaseNetwork | null {
   const normalized = value.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (normalized === 'ethereum' || normalized === 'ethereummainnet') return 'ETHEREUM';
-  if (normalized === 'base') return 'BASE';
-  if (normalized === 'arbitrum' || normalized === 'arbitrumone') return 'ARBITRUM';
   if (normalized === 'solana') return 'SOLANA';
   return null;
 }
@@ -67,19 +55,12 @@ export interface PurchaseChainReader {
   balance(asset: PaymentAssetDefinition, wallet: PurchaseWallet): Promise<string>;
   tokenDecimals(network: PurchaseNetwork, address: string): Promise<number>;
   tokenUiMultiplier?(network: PurchaseNetwork, address: string, decimals: number): Promise<string>;
-  allowance(network: Exclude<PurchaseNetwork, 'SOLANA'>, token: string, owner: string, spender: string): Promise<string>;
-  transactionStatus(network: Exclude<PurchaseNetwork, 'SOLANA'>, transactionId: string): Promise<'PENDING' | 'SUCCESS' | 'FAILED'>;
-  prepareApproval(network: Exclude<PurchaseNetwork, 'SOLANA'>, from: string, token: string, data: string): Promise<{
-    gas: string; gasPrice: string; maxFeePerGas: null; maxPriorityFeePerGas: null;
-  }>;
 }
 
 export interface JsonRpc { call(network: PurchaseNetwork, method: string, params: unknown[]): Promise<unknown> }
 type PurchasePriceReader = Pick<PortfolioUpstream, 'prices'>;
 const runRpc = limitConcurrency(8);
-const EvmNetworks = new Set<PurchaseNetwork>(['ETHEREUM', 'BASE', 'ARBITRUM']);
-const AllowedMethods = new Set(['eth_chainId', 'eth_getBalance', 'eth_getCode', 'eth_call', 'getBalance',
-  'eth_getTransactionReceipt', 'eth_estimateGas', 'eth_gasPrice', 'getTokenAccountsByOwner', 'getTokenSupply',
+const AllowedMethods = new Set(['getBalance', 'getTokenAccountsByOwner', 'getTokenSupply',
   'getAccountInfo', 'getMultipleAccounts', 'getFeeForMessage', 'simulateTransaction', 'getBlockHeight', 'getGenesisHash', 'getTransaction']);
 
 export class PurchaseRpcError extends Error { constructor() { super('Purchase chain data could not be verified'); } }
@@ -105,9 +86,6 @@ async function readBounded(response: Response): Promise<unknown> {
 
 export function publicPurchaseRpc(env: NodeJS.ProcessEnv = process.env, fetcher: typeof fetch = fetch): JsonRpc {
   const endpoints: Record<PurchaseNetwork, URL> = {
-    ETHEREUM: rpcEndpoint(env.ETHEREUM_RPC_URL ?? 'https://ethereum-rpc.publicnode.com'),
-    BASE: rpcEndpoint(env.BASE_RPC_URL ?? 'https://base-rpc.publicnode.com'),
-    ARBITRUM: rpcEndpoint(env.ARBITRUM_RPC_URL ?? 'https://arbitrum-one-rpc.publicnode.com'),
     SOLANA: rpcEndpoint(env.SOLANA_RPC_URL ?? 'https://api.mainnet-beta.solana.com'),
   };
   return { async call(network, method, params) {
@@ -134,13 +112,6 @@ export function publicPurchaseRpc(env: NodeJS.ProcessEnv = process.env, fetcher:
   } };
 }
 
-function hexQuantity(value: unknown): bigint {
-  const parsed = z.string().regex(/^0x[0-9a-fA-F]+$/).safeParse(value);
-  if (!parsed.success) throw new PurchaseRpcError();
-  return BigInt(parsed.data);
-}
-function wordAddress(address: string): string { return address.toLowerCase().slice(2).padStart(64, '0'); }
-
 export class PublicPurchaseChainReader implements PurchaseChainReader {
   private solanaVerifiedUntil = 0;
   private solanaVerification: Promise<void> | null = null;
@@ -165,8 +136,7 @@ export class PublicPurchaseChainReader implements PurchaseChainReader {
     // Options are identical across stock Buy screens for the same wallet pair. Share
     // the in-flight RPC/price read and briefly reuse its result; quote() still calls
     // balance() directly so a stale options snapshot cannot authorize a purchase.
-    const key = JSON.stringify([...wallets].map(wallet => ({ chain: wallet.chain,
-      address: wallet.chain === 'ETHEREUM' ? wallet.address.toLowerCase() : wallet.address }))
+    const key = JSON.stringify([...wallets].map(wallet => ({ chain: wallet.chain, address: wallet.address }))
       .sort((a, b) => a.chain.localeCompare(b.chain)));
     const existing = this.paymentSnapshots.get(key);
     if (existing && existing.until > this.now()) return (await existing.result).map(asset => ({ ...asset }));
@@ -209,99 +179,50 @@ export class PublicPurchaseChainReader implements PurchaseChainReader {
 
   async balance(asset: PaymentAssetDefinition, wallet: PurchaseWallet): Promise<string> {
     if (wallet.chain !== asset.walletChain) throw new PurchaseRpcError();
-    if (asset.network === 'SOLANA') {
-      await this.requireSolanaMainnet();
-      if (asset.address === SOL_NATIVE) {
-        const raw = await this.rpc.call('SOLANA', 'getBalance', [wallet.address, { commitment: 'confirmed' }]);
-        return z.object({ value: z.union([z.string().regex(/^\d+$/), z.number().int().nonnegative()]) }).passthrough()
-          .parse(raw).value.toString();
-      }
-      const raw = await this.rpc.call('SOLANA', 'getTokenAccountsByOwner', [wallet.address, { mint: asset.address }, { encoding: 'jsonParsed', commitment: 'confirmed' }]);
-      const tokenAmount = z.object({ amount: z.string().regex(/^\d+$/), decimals: MintDecimals }).passthrough();
-      const tokenAccount = z.object({ account: z.object({ data: z.object({ parsed: z.object({ info: z.object({
-        tokenAmount,
-      }).passthrough() }).passthrough() }).passthrough() }).passthrough() }).passthrough();
-      const rows = z.object({ value: z.array(tokenAccount).max(64) }).passthrough().parse(raw).value;
-      return rows.reduce((total, row) => {
-        const amount = row.account.data.parsed.info.tokenAmount;
-        if (amount.decimals !== asset.decimals) throw new PurchaseRpcError();
-        return total + BigInt(amount.amount);
-      }, 0n).toString();
+    await this.requireSolanaMainnet();
+    if (asset.address === SOL_NATIVE) {
+      const raw = await this.rpc.call('SOLANA', 'getBalance', [wallet.address, { commitment: 'confirmed' }]);
+      return z.object({ value: z.union([z.string().regex(/^\d+$/), z.number().int().nonnegative()]) }).passthrough()
+        .parse(raw).value.toString();
     }
-    const chain = await this.rpc.call(asset.network, 'eth_chainId', []);
-    if (hexQuantity(chain).toString() !== asset.chainId) throw new PurchaseRpcError();
-    if (asset.address === EVM_NATIVE) return hexQuantity(await this.rpc.call(asset.network, 'eth_getBalance', [wallet.address, 'latest'])).toString();
-    const result = await this.rpc.call(asset.network, 'eth_call', [{ to: asset.address, data: `0x70a08231${wordAddress(wallet.address)}` }, 'latest']);
-    return hexQuantity(result).toString();
+    const raw = await this.rpc.call('SOLANA', 'getTokenAccountsByOwner', [wallet.address, { mint: asset.address }, { encoding: 'jsonParsed', commitment: 'confirmed' }]);
+    const tokenAmount = z.object({ amount: z.string().regex(/^\d+$/), decimals: MintDecimals }).passthrough();
+    const tokenAccount = z.object({ account: z.object({ data: z.object({ parsed: z.object({ info: z.object({
+      tokenAmount,
+    }).passthrough() }).passthrough() }).passthrough() }).passthrough() }).passthrough();
+    const rows = z.object({ value: z.array(tokenAccount).max(64) }).passthrough().parse(raw).value;
+    return rows.reduce((total, row) => {
+      const amount = row.account.data.parsed.info.tokenAmount;
+      if (amount.decimals !== asset.decimals) throw new PurchaseRpcError();
+      return total + BigInt(amount.amount);
+    }, 0n).toString();
   }
 
   async tokenDecimals(network: PurchaseNetwork, address: string): Promise<number> {
-    if (network === 'SOLANA') {
-      await this.requireSolanaMainnet();
-      const raw = await this.rpc.call(network, 'getTokenSupply', [address, { commitment: 'confirmed' }]);
-      return z.object({ value: z.object({ decimals: MintDecimals }).passthrough() }).passthrough().parse(raw).value.decimals;
-    }
-    if (!EvmNetworks.has(network) || !/^0x[0-9a-fA-F]{40}$/.test(address)) throw new PurchaseRpcError();
-    const expected = PURCHASE_CHAIN_IDS[network];
-    if (hexQuantity(await this.rpc.call(network, 'eth_chainId', [])).toString() !== expected) throw new PurchaseRpcError();
-    const code = z.string().regex(/^0x[0-9a-fA-F]*$/).parse(await this.rpc.call(network, 'eth_getCode', [address, 'latest']));
-    if (code === '0x' || code === '0x0' || code === '0x00') throw new PurchaseRpcError();
-    const raw = hexQuantity(await this.rpc.call(network, 'eth_call', [{ to: address, data: '0x313ce567' }, 'latest']));
-    const value = Number(raw); if (!Number.isInteger(value) || value < 0 || value > 36) throw new PurchaseRpcError(); return value;
+    await this.requireSolanaMainnet();
+    const raw = await this.rpc.call(network, 'getTokenSupply', [address, { commitment: 'confirmed' }]);
+    return z.object({ value: z.object({ decimals: MintDecimals }).passthrough() }).passthrough().parse(raw).value.decimals;
   }
 
   async tokenUiMultiplier(network: PurchaseNetwork, address: string, decimals: number): Promise<string> {
-    if (network !== 'SOLANA') return '1';
     await this.requireSolanaMainnet();
     const raw = await this.rpc.call(network, 'getAccountInfo', [address, { encoding: 'base64', commitment: 'confirmed' }]);
     const envelope = z.object({ value: z.unknown() }).passthrough().parse(raw);
     return readSolanaMintUiMultiplier(envelope.value, decimals, Date.now());
   }
 
-  async allowance(network: Exclude<PurchaseNetwork, 'SOLANA'>, token: string, owner: string, spender: string): Promise<string> {
-    if (![token, owner, spender].every(value => /^0x[0-9a-fA-F]{40}$/.test(value))) throw new PurchaseRpcError();
-    const result = await this.rpc.call(network, 'eth_call', [{ to: token,
-      data: `0xdd62ed3e${wordAddress(owner)}${wordAddress(spender)}` }, 'latest']);
-    return hexQuantity(result).toString();
-  }
-
-  async transactionStatus(network: Exclude<PurchaseNetwork, 'SOLANA'>, transactionId: string): Promise<'PENDING' | 'SUCCESS' | 'FAILED'> {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(transactionId)) throw new PurchaseRpcError();
-    const raw = await this.rpc.call(network, 'eth_getTransactionReceipt', [transactionId]);
-    if (raw === null) return 'PENDING';
-    const receipt = z.object({ transactionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
-      status: z.string().regex(/^0x[0-9a-fA-F]+$/) }).passthrough().parse(raw);
-    if (receipt.transactionHash.toLowerCase() !== transactionId.toLowerCase()) throw new PurchaseRpcError();
-    return BigInt(receipt.status) === 1n ? 'SUCCESS' : 'FAILED';
-  }
-
-  async prepareApproval(network: Exclude<PurchaseNetwork, 'SOLANA'>, from: string, token: string, data: string) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(from) || !/^0x[0-9a-fA-F]{40}$/.test(token) || !/^0x[0-9a-fA-F]{136}$/.test(data)) {
-      throw new PurchaseRpcError();
-    }
-    const [rawGas, rawGasPrice] = await Promise.all([
-      this.rpc.call(network, 'eth_estimateGas', [{ from, to: token, value: '0x0', data }]),
-      this.rpc.call(network, 'eth_gasPrice', []),
-    ]);
-    const estimate = hexQuantity(rawGas); const gasPrice = hexQuantity(rawGasPrice);
-    if (estimate < 21_000n || estimate > 500_000n || gasPrice === 0n || gasPrice > 1_000_000_000_000_000n) throw new PurchaseRpcError();
-    const gas = estimate * 120n / 100n;
-    return { gas: `0x${gas.toString(16)}`, gasPrice: `0x${gasPrice.toString(16)}`,
-      maxFeePerGas: null as null, maxPriorityFeePerGas: null as null };
-  }
 }
 
 /** Purchase defaults use the same bounded, exact-asset price reader as wallet valuation. */
 function paymentPriceAsset(asset: PaymentAsset): PortfolioAsset {
-  if (!['SOL', 'ETH', 'USDC'].includes(asset.symbol)) throw new Error('Only supported funding assets have payment valuations');
-  const pricing: PortfolioAsset['pricing'] = asset.symbol === 'SOL' ? 'solana' : asset.symbol === 'ETH' ? 'ETH' : 'USDC';
+  if (!['SOL', 'USDC'].includes(asset.symbol)) throw new Error('Only supported funding assets have payment valuations');
   return {
     key: asset.id,
-    chain: asset.network === 'SOLANA' ? 'SOLANA' : 'ETHEREUM',
+    chain: 'SOLANA',
     address: asset.symbol === 'SOL' ? SOL_MINT : asset.symbol === 'USDC' ? asset.address : null,
     stockId: null,
     decimals: asset.decimals,
-    pricing,
+    pricing: 'solana',
   };
 }
 

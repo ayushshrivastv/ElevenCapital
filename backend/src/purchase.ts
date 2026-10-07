@@ -1,10 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import type { PrivyPrincipal } from './privy-auth.js';
-import { destinationFrom, displayAmount, EVM_NATIVE, humanAmount, normalizeNetwork, paymentAssetDefinition,
+import { destinationFrom, displayAmount, humanAmount, normalizeNetwork, paymentAssetDefinition,
   PurchaseRpcUnavailableError, walletForNetwork, type PaymentAssetDefinition, type PurchaseChainReader } from './purchase-chain.js';
-import { LiFiError, type LiFiRouteQuote, type PurchaseRouter } from './lifi.js';
-import { RELAY_ANTHROPIC_MINT, RELAY_ANTHROPIC_TOOL } from './relay.js';
+import { PurchaseRouteError, type PurchaseRouteQuote, type PurchaseRouter } from './purchase-router.js';
 import { PurchaseLedger, PurchaseLedgerError } from './purchase-ledger.js';
 import { completedPurchaseActivity, type PurchaseActivityResponse } from './purchase-activity.js';
 import { PurchaseQuoteResponseSchema, type PurchaseAction, type PurchaseCommitResponse, type PurchaseDestination,
@@ -17,6 +16,7 @@ export class PurchaseError extends Error {
   constructor(readonly code: 'stock_not_purchasable' | 'asset_unavailable' | 'insufficient_balance' | 'route_unavailable' |
     'router_unavailable' | 'unsafe_router_response' | 'invalid_purchase', readonly statusCode: 409 | 422 | 503, message: string) { super(message); }
 }
+const ROBINHOOD_TRADING_UNAVAILABLE = 'Robinhood Stock Tokens are available for browsing, but purchases are not supported in Eleven yet.';
 
 export interface PurchaseApi {
   options(principal: PrivyPrincipal, request: PurchaseOptionsRequest): Promise<PurchaseOptionsResponse>;
@@ -36,21 +36,15 @@ function fingerprint(request: PurchaseQuoteRequest): string {
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
 }
 function validDeployment(network: ReturnType<typeof normalizeNetwork>, address: string): boolean {
-  return network === 'SOLANA' ? /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address) :
-    network !== null && /^0x[0-9a-fA-F]{40}$/.test(address);
+  return network === 'SOLANA' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
 }
-function approvalData(spender: string, amount: string): string {
-  const word = (value: string) => value.toLowerCase().replace(/^0x/, '').padStart(64, '0');
-  const quantity = BigInt(amount).toString(16).padStart(64, '0');
-  return `0x095ea7b3${word(spender)}${quantity}`;
-}
-function executableUnitPrice(route: LiFiRouteQuote, outputAmount: string): string | null {
+function executableUnitPrice(route: PurchaseRouteQuote, outputAmount: string): string | null {
   if (route.toAmountUsd === null) return null;
   const output = new Decimal(outputAmount); const usd = new Decimal(route.toAmountUsd);
   if (!output.isFinite() || output.lte(0) || !usd.isFinite() || usd.isNegative()) return null;
   return usd.div(output).toFixed();
 }
-function routeScore(route: LiFiRouteQuote, destination: PurchaseDestination): Decimal {
+function routeScore(route: PurchaseRouteQuote, destination: PurchaseDestination): Decimal {
   if (route.toAmountUsd !== null) {
     const usd = new Decimal(route.toAmountUsd); if (usd.isFinite() && usd.isPositive()) return usd;
   }
@@ -68,6 +62,9 @@ export class PurchaseService implements PurchaseApi {
 
   async options(_principal: PrivyPrincipal, request: PurchaseOptionsRequest): Promise<PurchaseOptionsResponse> {
     const stock = await this.stock(request.stockId);
+    if (stock.provider === 'robinhood') return { schemaVersion: 1, stockId: stock.id, purchasable: false,
+      reason: ROBINHOOD_TRADING_UNAVAILABLE, paymentAssets: [], destinations: [], executionEnabled: false,
+      executionReason: ROBINHOOD_TRADING_UNAVAILABLE, defaultPaymentAssetId: null, defaultDestinationId: null };
     const selling = request.side === 'SELL';
     const [paymentAssets, destinations] = await Promise.all([
       selling ? this.stockBalances(stock, request.wallets) : this.chains.paymentAssets(request.wallets),
@@ -84,21 +81,19 @@ export class PurchaseService implements PurchaseApi {
     const fundedUsdc = funded.filter(asset => asset.symbol === 'USDC').sort((a, b) => a.id.localeCompare(b.id));
     const fundedById = [...funded].sort((a, b) => a.id.localeCompare(b.id));
     const enabledById = [...enabled].sort((a, b) => a.id.localeCompare(b.id));
-    const anthropicEthFallback = stock.id === `prestocks:${RELAY_ANTHROPIC_MINT}`
-      ? enabled.find(asset => asset.id === 'ETHEREUM:ETH')?.id : undefined;
     const reason = destinations.length === 0 ? 'This listing has no verified token deployment on a supported wallet network. Exchange-only listings require an exchange account.' :
       selling && !funded.length ? `No ${stock.symbol} tokens are available to sell in this wallet.` :
       enabled.length === 0 ? 'Wallet balances are temporarily unavailable on every supported network.' : null;
     return { schemaVersion: 1, stockId: stock.id, purchasable: reason === null, reason, paymentAssets, destinations,
       executionEnabled: this.executionEnabled,
       executionReason: this.executionEnabled ? null : 'Trading is not enabled on this server.',
-      defaultPaymentAssetId: valued[0]?.id ?? fundedUsdc[0]?.id ?? fundedById[0]?.id ??
-        anthropicEthFallback ?? enabledById[0]?.id ?? null,
-      // Auto prefers an independently verified direct route, then compares preview alternatives.
+      defaultPaymentAssetId: valued[0]?.id ?? fundedUsdc[0]?.id ?? fundedById[0]?.id ?? enabledById[0]?.id ?? null,
+      // Auto compares verified same-wallet Solana alternatives.
       defaultDestinationId: null };
   }
 
   async quote(principal: PrivyPrincipal, request: PurchaseQuoteRequest): Promise<PurchaseQuoteResponse> {
+    if (request.stockId.startsWith('robinhood:')) throw new PurchaseError('stock_not_purchasable', 422, ROBINHOOD_TRADING_UNAVAILABLE);
     const requestFingerprint = fingerprint(request);
     const prior = this.ledger.findOperation(principal, request.operationId);
     if (prior) {
@@ -109,6 +104,7 @@ export class PurchaseService implements PurchaseApi {
       return prior.quote;
     }
     const stock = await this.stock(request.stockId);
+    if (stock.provider === 'robinhood') throw new PurchaseError('stock_not_purchasable', 422, ROBINHOOD_TRADING_UNAVAILABLE);
     const source = request.side === 'SELL'
       ? (await this.stockSources(stock)).find(asset => asset.id === request.fromAssetId)
       : paymentAssetDefinition(request.fromAssetId);
@@ -131,21 +127,15 @@ export class PurchaseService implements PurchaseApi {
       const toWallet = walletForNetwork(request.wallets, destination.network)!;
       const route = await this.router.quote({ source, destination, amountBaseUnits: request.amountBaseUnits,
         fromAddress: fromWallet.address, toAddress: toWallet.address, slippageBps: request.slippageBps });
-      if (route.toDecimals !== destination.decimals) throw new LiFiError('unsafe_router_response',
-        'The router token precision does not match the on-chain xStock contract.');
+      if (route.toDecimals !== destination.decimals) throw new PurchaseRouteError('unsafe_router_response',
+        'The router token precision does not match the verified Solana asset.');
       return { destination, route };
     };
-    // Do not make a working Solana route wait for unrelated cross-chain preview timeouts.
-    const direct = source.network === 'SOLANA' ? destinations.filter(d => d.network === 'SOLANA') : [];
-    const attempts = await Promise.allSettled(direct.map(quoteDestination));
-    if (!attempts.some(result => result.status === 'fulfilled' && result.value.route.executionValidated === true)) {
-      const remaining = destinations.filter(d => !direct.includes(d));
-      attempts.push(...await Promise.allSettled(remaining.map(quoteDestination)));
-    }
+    const attempts = await Promise.allSettled(destinations.map(quoteDestination));
     const available = attempts.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
     if (available.length === 0) {
-      const unsafe = attempts.find(result => result.status === 'rejected' && result.reason instanceof LiFiError && result.reason.code === 'unsafe_router_response');
-      const unavailable = attempts.find(result => result.status === 'rejected' && result.reason instanceof LiFiError && result.reason.code === 'router_unavailable');
+      const unsafe = attempts.find(result => result.status === 'rejected' && result.reason instanceof PurchaseRouteError && result.reason.code === 'unsafe_router_response');
+      const unavailable = attempts.find(result => result.status === 'rejected' && result.reason instanceof PurchaseRouteError && result.reason.code === 'router_unavailable');
       if (unsafe?.status === 'rejected') throw unsafe.reason;
       if (unavailable?.status === 'rejected') throw unavailable.reason;
       throw new PurchaseError('route_unavailable', 422, 'No executable route is currently available for this payment and stock.');
@@ -154,49 +144,14 @@ export class PurchaseService implements PurchaseApi {
       routeScore(b.route, b.destination).cmp(routeScore(a.route, a.destination)));
     const selected = available[0]!; const route = selected.route; const destination = selected.destination;
     const actions: PurchaseAction[] = [];
-    if (source.network !== 'SOLANA' && source.address !== EVM_NATIVE) {
-      if (!route.approvalAddress) throw new PurchaseError('unsafe_router_response', 503,
-        'The router omitted the required token approval target. Nothing was submitted.');
-      const allowance = await this.chains.allowance(source.network, source.address, fromWallet.address, route.approvalAddress)
-        .catch(() => { throw new PurchaseError('router_unavailable', 503, 'The token allowance could not be verified. Nothing was submitted.'); });
-      if (BigInt(allowance) < BigInt(request.amountBaseUnits)) {
-        const data = approvalData(route.approvalAddress, request.amountBaseUnits);
-        const fee = await this.chains.prepareApproval(source.network, fromWallet.address, source.address, data)
-          .catch(() => { throw new PurchaseError('router_unavailable', 503, 'The exact token approval could not be simulated. Nothing was submitted.'); });
-        actions.push({ id: randomUUID(), index: actions.length,
-          type: 'EVM_APPROVAL', network: source.network, chainId: source.chainId as '1' | '8453' | '42161', walletAddress: fromWallet.address,
-          transaction: { from: fromWallet.address, to: source.address, data,
-            value: '0x0', gas: fee.gas, gasPrice: fee.gasPrice, maxFeePerGas: fee.maxFeePerGas,
-            maxPriorityFeePerGas: fee.maxPriorityFeePerGas, nonce: null } });
-      }
-    } else if (route.approvalAddress !== null) throw new PurchaseError('unsafe_router_response', 503,
+    if (route.approvalAddress !== null) throw new PurchaseError('unsafe_router_response', 503,
       'The router requested an unexpected approval for a native asset. Nothing was submitted.');
-    if (route.transaction.kind === 'EVM') {
-      if (source.network === 'SOLANA') throw new PurchaseError('unsafe_router_response', 503, 'The router returned the wrong transaction family.');
-      actions.push({ id: randomUUID(), index: actions.length, type: 'EVM_ROUTE', network: source.network,
-        chainId: source.chainId as '1' | '8453' | '42161', walletAddress: fromWallet.address,
-        transaction: { from: route.transaction.from, to: route.transaction.to, data: route.transaction.data,
-          value: route.transaction.value, gas: route.transaction.gas, gasPrice: route.transaction.gasPrice,
-          maxFeePerGas: route.transaction.maxFeePerGas, maxPriorityFeePerGas: route.transaction.maxPriorityFeePerGas,
-          nonce: route.transaction.nonce } });
-    } else {
-      if (source.network !== 'SOLANA') throw new PurchaseError('unsafe_router_response', 503, 'The router returned the wrong transaction family.');
-      actions.push({ id: randomUUID(), index: actions.length, type: 'SOLANA_ROUTE', network: 'SOLANA', chainId: '1151111081099710',
-        walletAddress: fromWallet.address, transactionBase64: route.transaction.transactionBase64,
-        minContextSlot: route.transaction.minContextSlot, lastValidBlockHeight: route.transaction.lastValidBlockHeight });
-    }
-    let requiredNativeGas = 0n;
-    for (const action of actions) if (action.type !== 'SOLANA_ROUTE') {
-      const gas = action.transaction.gas === null ? null : BigInt(action.transaction.gas);
-      const fee = action.transaction.maxFeePerGas ?? action.transaction.gasPrice;
-      if (gas !== null && fee !== null) requiredNativeGas += gas * BigInt(fee);
-      else if (action.type === 'EVM_ROUTE' && route.sourceGasBaseUnits !== null) requiredNativeGas += BigInt(route.sourceGasBaseUnits);
-      else throw new PurchaseError('unsafe_router_response', 503, 'The router did not provide a bounded source-network gas estimate.');
-    }
-    if (source.network === 'SOLANA') requiredNativeGas = route.sourceGasBaseUnits === null ? 100_000n :
+    actions.push({ id: randomUUID(), index: 0, type: 'SOLANA_ROUTE', network: 'SOLANA', chainId: '1151111081099710',
+      walletAddress: fromWallet.address, transactionBase64: route.transaction.transactionBase64,
+      minContextSlot: route.transaction.minContextSlot, lastValidBlockHeight: route.transaction.lastValidBlockHeight });
+    const requiredNativeGas = route.sourceGasBaseUnits === null ? 100_000n :
       (BigInt(route.sourceGasBaseUnits) < 100_000n ? 100_000n : BigInt(route.sourceGasBaseUnits));
-    const nativeId = source.network === 'SOLANA' ? 'SOLANA:SOL' : `${source.network}:ETH`;
-    const nativeAsset = paymentAssetDefinition(nativeId);
+    const nativeAsset = paymentAssetDefinition('SOLANA:SOL');
     if (!nativeAsset) throw new PurchaseError('invalid_purchase', 422, 'The source network gas asset is not configured.');
     const nativeBalance = source.address === nativeAsset.address ? BigInt(balance) : BigInt(await this.chains.balance(nativeAsset, fromWallet)
       .catch(() => { throw new PurchaseError('router_unavailable', 503, 'The source-network gas balance could not be verified.'); }));
@@ -211,11 +166,10 @@ export class PurchaseService implements PurchaseApi {
       estimatedOutputAmount: output, estimatedOutputBaseUnits: route.toAmount,
       outputDecimals: destination.decimals, outputUiMultiplier: destination.uiMultiplier ?? '1',
       executableUnitPriceUsd: executableUnitPrice(route, output),
-      // An ERC-20 approval has an additional gas cost that /v1/quote does not estimate; leave the aggregate unknown instead of understating it.
-      feesUsd: actions.some(action => action.type === 'EVM_APPROVAL') ? null : route.feesUsd,
+      feesUsd: route.feesUsd,
       priceImpactPercent: route.priceImpactPercent, slippageBps: request.slippageBps,
       minimumReceived: minimum, minimumReceivedBaseUnits: route.toAmountMin,
-      expiresAt: new Date(Math.min(this.now() + (route.tool === RELAY_ANTHROPIC_TOOL ? 300_000 : 90_000),
+      expiresAt: new Date(Math.min(this.now() + 90_000,
         route.expiresAt ? Date.parse(route.expiresAt) : Infinity)).toISOString(), walletConfirmations: actions.length, actions,
       executionEnabled: this.executionEnabled && route.executionValidated === true,
       executionReason: this.executionEnabled && route.executionValidated === true ? null
@@ -258,32 +212,6 @@ export class PurchaseService implements PurchaseApi {
     if (purchase.state === 'QUOTED') throw new PurchaseLedgerError('quote_state_invalid', 422,
       'Commit the reviewed purchase before tracking execution.');
     if (purchase.state !== 'EXECUTING') return this.ledger.response(purchase);
-    const latestSubmission = purchase.submitted.at(-1);
-    const latestAction = latestSubmission ? purchase.quote.actions.find(action => action.id === latestSubmission.actionId) : undefined;
-    if (latestSubmission && latestAction?.type === 'EVM_APPROVAL' && latestSubmission.confirmedAt === null) {
-      try {
-        const receipt = await this.chains.transactionStatus(latestAction.network, latestSubmission.transactionId);
-        if (receipt === 'FAILED') return this.ledger.response(this.ledger.fail(principal, quoteId,
-          'The token approval transaction reverted. No route transaction was submitted.'));
-        if (receipt === 'PENDING') return this.ledger.response(purchase);
-        const source = paymentAssetDefinition(purchase.quote.fromAssetId);
-        if (!source || source.network === 'SOLANA' || source.address === EVM_NATIVE) throw new PurchaseError('invalid_purchase', 422,
-          'The reviewed approval asset is invalid.');
-        const spenderWord = latestAction.transaction.data.slice(10, 74);
-        const spender = `0x${spenderWord.slice(24)}`;
-        const approvedAmount = BigInt(`0x${latestAction.transaction.data.slice(74, 138)}`);
-        if (approvedAmount !== BigInt(purchase.quote.inputBaseUnits)) throw new PurchaseError('invalid_purchase', 422,
-          'The reviewed approval amount is invalid.');
-        const allowance = await this.chains.allowance(latestAction.network, source.address, latestAction.walletAddress, spender);
-        if (BigInt(allowance) < BigInt(purchase.quote.inputBaseUnits)) return this.ledger.response(this.ledger.fail(principal, quoteId,
-          'The confirmed approval did not grant the reviewed amount. No route transaction was submitted.'));
-        purchase = this.ledger.confirmAction(principal, quoteId, latestAction.id);
-      } catch (error) {
-        if (error instanceof PurchaseError || error instanceof PurchaseLedgerError) throw error;
-        // RPC propagation can lag briefly after a receipt. Keep the durable state and poll again automatically.
-        return this.ledger.response(purchase);
-      }
-    }
     if (purchase.submitted.length !== purchase.quote.actions.length) return this.ledger.response(purchase);
     const transactionId = purchase.submitted.at(-1)!.transactionId;
     try {
@@ -291,29 +219,20 @@ export class PurchaseService implements PurchaseApi {
       const statusRequest: Parameters<PurchaseRouter['status']>[0] = {
         transactionId, tool: purchase.route.tool, routeId: purchase.route.routeId,
         fromChainId: purchase.route.fromChainId, toChainId: purchase.route.toChainId,
-        ...(purchase.quote.destinationId.startsWith('SOLANA:') ? {
-          destinationAddress: purchase.quote.destinationId.slice(purchase.quote.destinationId.indexOf(':') + 1),
-          recipientAddress: purchase.route.destinationRecipientAddress ??
-            (finalAction.type === 'SOLANA_ROUTE' ? finalAction.walletAddress : undefined),
-          minimumReceivedBaseUnits: purchase.quote.minimumReceivedBaseUnits,
-        } : {}),
-        ...(finalAction.type === 'SOLANA_ROUTE' ? { expectedTransactionBase64: finalAction.transactionBase64 } : {}),
+        destinationAddress: purchase.quote.destinationId.slice(purchase.quote.destinationId.indexOf(':') + 1),
+        recipientAddress: purchase.route.destinationRecipientAddress ?? finalAction.walletAddress,
+        minimumReceivedBaseUnits: purchase.quote.minimumReceivedBaseUnits,
+        expectedTransactionBase64: finalAction.transactionBase64,
       };
       const observation = await this.router.status(statusRequest);
       const destinationTransactionId = observation.destinationTransactionId ?? null;
-      if (observation.state === 'DONE' && purchase.quote.destinationId.startsWith('SOLANA:') &&
-          finalAction.type !== 'SOLANA_ROUTE' && destinationTransactionId === null) {
-        purchase = this.ledger.recordRouterStatus(principal, quoteId, { state: 'PENDING', receivedAmount: null,
-          message: 'Waiting for the Solana settlement transaction.' });
-        return this.ledger.response(purchase);
-      }
       const receivedAmount = observation.receivedBaseUnits === null ? null :
         displayAmount(observation.receivedBaseUnits, this.destinationDecimals(purchase.quote, purchase.quote.destinationId), purchase.quote.outputUiMultiplier);
       purchase = this.ledger.recordRouterStatus(principal, quoteId, { state: observation.state, receivedAmount,
         message: observation.message, destinationTransactionId });
     } catch (error) {
       // A temporary tracker outage never changes the durable execution state. The app keeps polling automatically.
-      if (!(error instanceof LiFiError && error.code === 'router_unavailable')) throw error;
+      if (!(error instanceof PurchaseRouteError && error.code === 'router_unavailable')) throw error;
     }
     return this.ledger.response(purchase);
   }
@@ -339,7 +258,7 @@ export class PurchaseService implements PurchaseApi {
     const seen = new Set<string>();
     const candidates = stock.deployments.flatMap(deployment => {
       const network = normalizeNetwork(deployment.network); const address = deployment.address;
-      if (!network || !['ETHEREUM', 'SOLANA'].includes(network) || !validDeployment(network, address)) return [];
+      if (!network || !validDeployment(network, address)) return [];
       const id = `${network}:${address}`; if (!include({ id, network, address }) || seen.has(id)) return []; seen.add(id);
       return [{ network, address, declaredDecimals: deployment.decimals }];
     });
