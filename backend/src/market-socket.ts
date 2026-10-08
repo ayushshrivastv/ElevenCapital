@@ -4,16 +4,16 @@ import type { Duplex } from 'node:stream';
 import WebSocket, { WebSocketServer } from 'ws';
 import { z } from 'zod';
 import { Range, type Catalog, type Chart, type ChartRange, type Stock } from './schema.js';
-import { RealtimeCatalog } from './realtime.js';
+import { RealtimeCatalog, type MarketEvent } from './realtime.js';
 import type { CatalogPatch } from './market-update.js';
 
-const Id = z.string().min(3).max(120).regex(/^(backed|backpack|prestocks):[A-Za-z0-9.\-]+$/);
+const Id = z.string().min(3).max(120).regex(/^(backed|backpack|prestocks|robinhood):[A-Za-z0-9.\-]+$/);
 const Subscription = z.object({ type: z.literal('subscribe'), ids: z.array(Id).max(100),
   detail: z.object({ id: Id, range: Range }).strict().nullable().optional() }).strict();
 const LIMIT = 16 * 1024 * 1024;
 type Detail = { id: string; range: ChartRange };
 type Client = { socket: WebSocket; ids: Set<string>; detail?: Detail; chart?: Chart; chartPending: boolean;
-  chartGeneration: number; chartLoadedAt: number; alive: boolean; hasSnapshot: boolean };
+  chartGeneration: number; chartLoadedAt: number; missedPongs: number; hasSnapshot: boolean };
 export interface SocketMarketService {
   chart(id: string, range: ChartRange): Promise<Chart>;
   setInterest?(ids: Iterable<string>): void;
@@ -26,6 +26,9 @@ export function chartMatchesStock(chart: Chart, stock: Stock): boolean {
   if (chart.basis === stock.quote.basis && chart.currency === stock.quote.currency) return true;
   if ((stock.provider === 'backed' || stock.provider === 'prestocks') && chart.basis === 'onchain_token_market' &&
     chart.currency === 'USD' && stock.deployments.some(deployment => deployment.network.toLowerCase() === 'solana')) return true;
+  if (stock.provider === 'robinhood' && chart.basis === 'underlying_share_reference' && chart.currency === 'USD' &&
+    stock.underlying.listingCountry === 'US' && stock.underlying.currency === 'USD' && !!stock.underlying.isin &&
+    stock.deployments.some(deployment => deployment.network === 'Robinhood Chain' && deployment.chainId === 4663)) return true;
   return stock.provider === 'backed' && chart.basis === 'underlying_share_reference' &&
     (chart.currency === 'USD' || chart.currency === 'USDC') &&
     stock.underlying.listingCountry === 'US' && stock.underlying.currency === 'USD' && !!stock.underlying.isin;
@@ -41,7 +44,7 @@ export class MarketSocket {
   private readonly latencySamples: number[] = [];
   private readonly server = new WebSocketServer({ noServer: true, maxPayload: 32_768,
     perMessageDeflate: { threshold: 2_048, serverNoContextTakeover: true, clientNoContextTakeover: true, concurrencyLimit: 2 } });
-  private readonly unsubscribe: () => void;
+  private unsubscribe?: () => void;
   private readonly heartbeat: ReturnType<typeof setInterval>;
   readonly metrics = { connections: 0, messages: 0, rejectedMessages: 0, deltas: 0, snapshots: 0,
     publicationToWsEnqueueLastMs: null as number | null, publicationToWsEnqueueMaxMs: null as number | null,
@@ -51,62 +54,84 @@ export class MarketSocket {
     private readonly service: SocketMarketService, private readonly now = Date.now,
     private readonly monotonicNow = () => performance.now()) {
     httpServer.on('upgrade', this.upgrade);
-    this.unsubscribe = feed.subscribe(event => {
+    this.onFeedEvent = event => {
       if (event.event === 'status') { for (const client of this.clients) this.send(client, { type: 'status', ...event.data }); return; }
       const patch = event.patch;
-      // A full copy is only needed for an unannotated authoritative refresh.
-      // Incremental publications consult the existing index directly.
-      const previous = patch ? undefined : new Map(this.latestById);
+      const providersChanged = JSON.stringify(this.latest?.providers ?? []) !== JSON.stringify(event.data.providers);
       this.latest = event.data; this.revision++;
-      const membershipChanged = !patch || patch.membershipChanged ||
-        patch.removedIds.some(id => this.latestById.has(id)) || patch.stocks.some(stock => !this.latestById.has(stock.id));
-      if (membershipChanged) {
+      // An unannotated authoritative refresh may reorder or replace arbitrary rows,
+      // so connected clients need a fresh snapshot. Annotated publications already
+      // carry every upsert and removal required to update catalog membership; sending
+      // another multi-megabyte snapshot for those patches can starve heartbeats and
+      // force mobile clients into a reconnect loop.
+      if (!patch) {
+        const previous = new Map(this.latestById);
         this.reindex(event.data);
         for (const client of this.clients) {
-          const detailChanged = this.detailChanged(client, previous, this.latestById, patch);
-          this.snapshot(client, patch?.requestedAt);
+          const detailChanged = this.detailChanged(client, previous, this.latestById);
+          this.snapshot(client);
           if (detailChanged) this.updateChart(client, true);
         }
         this.interests();
         return;
       }
-      this.applyPatch(patch);
+      const addedIds = new Set(patch.stocks.filter(stock => !this.latestById.has(stock.id)).map(stock => stock.id));
+      const membershipChanged = patch.membershipChanged || patch.removedIds.some(id => this.latestById.has(id)) || addedIds.size > 0;
+      if (membershipChanged) {
+        this.reindex(event.data);
+      } else this.applyPatch(patch);
       const detailChanges = new Set([...patch.changedIds, ...patch.removedIds]);
       for (const client of this.clients) {
         if (!client.hasSnapshot) { this.snapshot(client); continue; }
-        // Every connected catalog receives every accepted changed row immediately.
-        // Viewport IDs prioritize upstream collection; they never delay delivery of
-        // a change that the backend has already accepted.
-        this.delta(client, patch.stocks, patch.removedIds, patch.requestedAt);
+        // Keep catalog membership authoritative, but send high-frequency observations
+        // only for rows this client is actually showing. A newly visible row is echoed
+        // from latestById by the subscription handler below.
+        const stocks = patch.stocks.filter(stock => addedIds.has(stock.id) || client.ids.has(stock.id));
+        if (stocks.length || patch.removedIds.length || providersChanged) {
+          this.delta(client, stocks, patch.removedIds, patch.requestedAt);
+        }
         if (client.detail && detailChanges.has(client.detail.id)) this.updateChart(client, true);
       }
-    });
+      if (membershipChanged) this.interests();
+    };
     this.heartbeat = setInterval(() => {
       for (const client of this.clients) {
-        if (!client.alive) { client.socket.terminate(); continue; }
-        client.alive = false; client.socket.ping();
+        if (client.missedPongs >= 2) { client.socket.terminate(); continue; }
+        client.missedPongs++; client.socket.ping();
         this.send(client, { type: 'heartbeat', serverTime: new Date(this.now()).toISOString() });
       }
     }, 10_000);
     this.heartbeat.unref();
   }
+  private onFeedEvent: (event: MarketEvent) => void;
   private upgrade = (request: import('node:http').IncomingMessage, socket: Duplex, head: Buffer) => {
     if (request.url !== '/v1/market/ws') { socket.destroy(); return; }
     if (this.clients.size >= 32) { socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); return; }
     this.server.handleUpgrade(request, socket, head, connection => this.attach(connection));
   };
   private attach(socket: WebSocket) {
+    // A server with no connected app should not normalize and diff the full
+    // searchable catalog for every background quote. Subscribing here still
+    // gives the first app an up-to-date full snapshot before its deltas.
+    if (!this.unsubscribe) this.unsubscribe = this.feed.subscribe(this.onFeedEvent);
     const client: Client = { socket, ids: new Set(), chartPending: false, chartGeneration: 0, chartLoadedAt: 0,
-      alive: true, hasSnapshot: false };
+      missedPongs: 0, hasSnapshot: false };
     this.clients.add(client); this.metrics.connections = this.clients.size;
-    socket.on('pong', () => { client.alive = true; });
+    socket.on('pong', () => { client.missedPongs = 0; });
     socket.on('error', () => {});
-    socket.on('close', () => { this.clients.delete(client); this.metrics.connections = this.clients.size; this.interests(); });
+    socket.on('close', () => {
+      this.clients.delete(client); this.metrics.connections = this.clients.size; this.interests();
+      if (this.clients.size === 0) {
+        this.unsubscribe?.(); this.unsubscribe = undefined;
+        this.latest = undefined; this.latestById.clear();
+      }
+    });
     socket.on('message', (data, binary) => {
       try {
         if (binary) throw new Error('Text only');
         const message = Subscription.parse(JSON.parse(data.toString()));
         this.metrics.messages++;
+        const previousIds = client.ids;
         client.ids = new Set(message.ids);
         const detail = message.detail ?? undefined;
         const detailSelectionChanged = JSON.stringify(detail) !== JSON.stringify(client.detail);
@@ -116,7 +141,9 @@ export class MarketSocket {
         client.detail = detail;
         if (detail) client.ids.add(detail.id);
         this.interests(); this.revision++;
-        const current = [...client.ids].flatMap(id => this.latestById.get(id) ?? []);
+        // Retained rows already arrive through the initial snapshot and feed deltas.
+        // Only newly effective viewport/detail IDs need an immediate current observation.
+        const current = [...client.ids].filter(id => !previousIds.has(id)).flatMap(id => this.latestById.get(id) ?? []);
         this.delta(client, current, []);
         if (detail && (detailSelectionChanged || (!client.chart && !client.chartPending))) {
           this.updateChart(client, detailSelectionChanged);
@@ -215,7 +242,7 @@ export class MarketSocket {
       chart: this.service.withCurrent?.(chart) ?? chart });
   }
   close() {
-    this.unsubscribe(); clearInterval(this.heartbeat);
+    this.unsubscribe?.(); this.unsubscribe = undefined; clearInterval(this.heartbeat);
     this.httpServer.removeListener('upgrade', this.upgrade);
     for (const client of this.clients) client.socket.terminate();
     this.clients.clear(); this.service.setInterest?.([]); this.server.close();

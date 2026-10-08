@@ -7,7 +7,7 @@ const HttpsProviderUrl = z.url().max(2_048).refine(value => {
   const url = new URL(value);
   return url.protocol === 'https:' && url.hostname.length > 0 && url.username === '' && url.password === '';
 }, 'Provider information URLs must be HTTPS origins without embedded credentials');
-export const ProviderId = z.enum(['backed', 'backpack', 'prestocks']);
+export const ProviderId = z.enum(['backed', 'backpack', 'prestocks', 'robinhood']);
 export type Provider = z.infer<typeof ProviderId>;
 export const ProviderIds = ProviderId.options;
 export const Range = z.enum(['ONE_HOUR', 'ONE_DAY', 'ONE_WEEK', 'ONE_MONTH', 'YEAR_TO_DATE']);
@@ -34,21 +34,22 @@ export const MetricSchema = z.object({
 });
 export type Metric = z.infer<typeof MetricSchema>;
 export const StatisticsSchema = z.object({
-  scope: z.literal('solana_token'), network: z.literal('solana').nullable(), mint: z.string().nullable(),
+  scope: z.enum(['solana_token', 'robinhood_chain_token']), network: z.enum(['solana', 'robinhood_chain']).nullable(), mint: z.string().nullable(),
   updatedAt: Iso.nullable(),
   marketCapitalization: MetricSchema, liquidity: MetricSchema, holderCount: MetricSchema, organicScore: MetricSchema,
 });
 export type Statistics = z.infer<typeof StatisticsSchema>;
 export const ActivitySchema = z.object({
-  currency: z.enum(['USD', 'USDC']), source: z.enum(['Jupiter', 'Backpack', 'Yahoo']),
-  scope: z.enum(['solana_token', 'external_market', 'underlying_share']),
+  currency: z.enum(['USD', 'USDC']), source: z.enum(['Jupiter', 'Backpack', 'Yahoo', 'Robinhood', 'GeckoTerminal']),
+  scope: z.enum(['solana_token', 'external_market', 'underlying_share', 'robinhood_chain_token']),
   volume24h: DecimalString.nullable(), netVolume24h: DecimalString.nullable(),
   receivedAt: Iso.nullable(), updatedAt: Iso.nullable(),
   volumeReason: z.string().trim().min(1).nullable(), netVolumeReason: z.string().trim().min(1).nullable(),
 }).superRefine((activity, context) => {
   if ((activity.source === 'Jupiter' && (activity.currency !== 'USD' || activity.scope !== 'solana_token')) ||
     (activity.source === 'Backpack' && (activity.currency !== 'USDC' || activity.scope !== 'external_market')) ||
-    (activity.source === 'Yahoo' && (activity.currency !== 'USD' || activity.scope !== 'underlying_share'))) {
+    (activity.source === 'Yahoo' && (activity.currency !== 'USD' || activity.scope !== 'underlying_share')) ||
+    ((activity.source === 'Robinhood' || activity.source === 'GeckoTerminal') && (activity.currency !== 'USD' || activity.scope !== 'robinhood_chain_token'))) {
     context.addIssue({ code: 'custom', message: 'Activity currency and scope must match its source' });
   }
   for (const [valueKey, reasonKey] of [['volume24h', 'volumeReason'], ['netVolume24h', 'netVolumeReason']] as const) {
@@ -69,11 +70,21 @@ export const ActivitySchema = z.object({
   }
 });
 export type Activity = z.infer<typeof ActivitySchema>;
+/** Provider-published underlying-share fields remain separate from token-market activity. */
+export const RobinhoodReferenceSchema = z.object({
+  basis: z.literal('underlying_share_reference'), currency: z.literal('USD'),
+  bid: DecimalString, ask: DecimalString, dailyHigh: DecimalString.nullable(), dailyLow: DecimalString.nullable(),
+  dailyTradingVolume: DecimalString.nullable(), volumeUnit: z.literal('underlying_shares'),
+  currentMultiplier: DecimalString, tokenDecimals: z.number().int().min(0).max(36),
+  asOf: Iso, receivedAt: Iso, isTradingHalt: z.boolean(),
+});
+export type RobinhoodReference = z.infer<typeof RobinhoodReferenceSchema>;
 export const StockSchema = z.object({
   id: z.string(), provider: ProviderId, providerLabel: z.string(), providerAssetId: z.string(),
   symbol: z.string(), name: z.string(), logoUrl: z.url().nullable(),
   description: z.string().trim().min(1).max(20_000).nullable().optional(),
   informationUrl: HttpsProviderUrl.nullable().optional(),
+  robinhoodReference: RobinhoodReferenceSchema.optional(),
   underlying: z.object({ symbol: z.string(), isin: z.string().nullable(), cusip: z.string().nullable(), listingCountry: z.string().nullable().optional(), currency: z.string().nullable().optional() }),
   quote: z.object({
     price: DecimalString.nullable(), currency: z.enum(['USD', 'USDC']),
@@ -88,6 +99,8 @@ export const StockSchema = z.object({
   activity: ActivitySchema,
   deployments: z.array(z.object({
     network: z.string(), address: z.string(), decimals: z.number().int().min(0).max(36).nullable(),
+    chainId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    explorerUrl: HttpsProviderUrl.optional(),
     depositEnabled: z.boolean().nullable(), withdrawEnabled: z.boolean().nullable(),
   })),
   trading: z.object({ enabled: z.literal(false), reason: z.string() }),

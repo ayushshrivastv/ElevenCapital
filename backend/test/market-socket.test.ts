@@ -24,6 +24,9 @@ class MemorySocket extends EventEmitter {
  send(value:unknown){this.frames.push(JSON.parse(String(value)));}
  ping(){}close(){}terminate(){}
 }
+function subscribe(socket:MemorySocket,ids:string[],detail?:{id:string;range:Chart['range']}|null){
+ socket.emit('message',Buffer.from(JSON.stringify({type:'subscribe',ids,...(detail===undefined?{}:{detail})})),false);
+}
 test('a verified token or same-share history remains valid when the live quote uses another basis', () => {
  const backed: Stock={...stock(),id:'backed:verified-asset',provider:'backed',providerAssetId:'verified-asset',
   underlying:{symbol:'MSFT',isin:'US5949181045',cusip:'594918104',listingCountry:'US',currency:'USD'},
@@ -52,7 +55,7 @@ test('external ticker preserves decimal precision and turnover; rejects old, for
  assert.equal(StockSchema.safeParse(recurring).success,true);
  assert.ok(recurring.quote.changePercent!.length<100);
 });
-test('socket bootstrap, all-row ordered deltas, authoritative delisting and fresh reconnect snapshot',async()=>{
+test('socket bootstrap, ordered membership deltas and fresh reconnect snapshot',async()=>{
  let value:Catalog={schemaVersion:1,mode:'live-read-only',receivedAt:iso,providers:[{id:'backed',status:'unavailable'},{id:'backpack',status:'ok'}],stocks:[stock(),stock('AAPL.US')]};
  let publish:(v:Catalog,m?:CatalogMutation)=>void=()=>{};let selected:string[]=[];
  const service={catalog:async()=>value,onUpdate:(fn:typeof publish)=>{publish=fn;return()=>{};},setInterest:(ids:Iterable<string>)=>{selected=[...ids]},
@@ -67,13 +70,14 @@ test('socket bootstrap, all-row ordered deltas, authoritative delisting and fres
  publish(value,{changedIds:value.stocks.map(s=>s.id),removedIds:[],membershipChanged:false,requestedAt:performance.now()});
  await until(()=>frames.some(f=>f.type==='delta'&&f.stocks.some((s:Stock)=>s.quote.price==='101')));
  assert.deepEqual(frames.filter(f=>f.type==='delta').at(-1).stocks.map((s:Stock)=>s.id),
-  ['backpack:MSFT.US','backpack:AAPL.US']);
+  ['backpack:MSFT.US']);
  const revisions=frames.filter(f=>['delta','snapshot'].includes(f.type)).map(f=>f.revision);
  assert.ok(revisions.every((r,i)=>i===0||r>revisions[i-1]));
  value={...value,stocks:[value.stocks[1]!]};
  publish(value,{changedIds:[],removedIds:['backpack:MSFT.US'],membershipChanged:true,requestedAt:performance.now()});
- await until(()=>frames.filter(f=>f.type==='snapshot').length===2);
- assert.deepEqual(frames.filter(f=>f.type==='snapshot').at(-1).catalog.stocks.map((s:Stock)=>s.id),['backpack:AAPL.US']);
+ await until(()=>frames.some(f=>f.type==='delta'&&f.removedIds.includes('backpack:MSFT.US')));
+ assert.equal(frames.filter(f=>f.type==='snapshot').length,1,'an annotated membership patch must not repeat the catalog');
+ assert.deepEqual(frames.filter(f=>f.type==='delta').at(-1).removedIds,['backpack:MSFT.US']);
  ws.close();await until(()=>selected.length===0);
  const again:any[]=[],ws2=new WebSocket(`ws://127.0.0.1:${address.port}/v1/market/ws`);ws2.on('message',d=>again.push(JSON.parse(d.toString())));
  await until(()=>again.some(f=>f.type==='snapshot'));assert.equal(again.find(f=>f.type==='snapshot').catalog.stocks.length,1);ws2.close();
@@ -87,7 +91,7 @@ test('oversized subscriptions close only the offending connection',async()=>{
  ws.send(JSON.stringify({type:'subscribe',ids:Array(101).fill('backpack:MSFT.US')}));assert.equal(await closed,1008);assert.equal((await app.inject('/health')).statusCode,200);
  }finally{ws.terminate();await app.close();}
 });
-test('offscreen observations are delivered immediately without subscribing them upstream',async()=>{
+test('offscreen observations wait for subscription and then echo the latest row',async()=>{
  const initial:Catalog={schemaVersion:1,mode:'live-read-only',receivedAt:iso,providers:[],stocks:[stock(),stock('AAPL.US')]};
  const http=createServer();await new Promise<void>(r=>http.listen(0,'127.0.0.1',r));
  const feed=new RealtimeCatalog(async()=>initial,()=>now);let interests:string[]=[];
@@ -102,22 +106,20 @@ test('offscreen observations are delivered immediately without subscribing them 
   monotonic=15;
   feed.publish({...initial,stocks:[initial.stocks[0]!,{...initial.stocks[1]!,quote:{...initial.stocks[1]!.quote,price:'222'}}]},
     {changedIds:['backpack:AAPL.US'],removedIds:[],membershipChanged:false,requestedAt:10});
-  await until(()=>frames.some(f=>f.type==='delta'&&f.stocks.some((s:Stock)=>s.id==='backpack:AAPL.US'&&s.quote.price==='222')));
   const delivered=frames.slice(before).filter(f=>f.type==='delta');
-  assert.equal(delivered.length,1,'the changed offscreen row must be in the first publication, not a later catch-up');
-  assert.deepEqual(delivered[0].stocks.map((s:Stock)=>s.id),['backpack:AAPL.US']);
+  assert.equal(delivered.length,0,'an offscreen tick must not consume mobile bandwidth');
   assert.deepEqual(interests,['backpack:MSFT.US'],'delivery must not create high-frequency offscreen source subscriptions');
-  assert.equal(transport.metrics.publicationToWsEnqueueLastMs,5);
-  assert.equal(transport.metrics.publicationToWsEnqueueMaxMs,5);
-  assert.equal(transport.metrics.publicationToWsEnqueueP95Ms,5);
-  assert.equal(transport.metrics.publicationToWsEnqueueP99Ms,5);
-  assert.equal(transport.metrics.publicationToWsEnqueueSamples,1);
+  assert.equal(transport.metrics.publicationToWsEnqueueLastMs,null);
+  assert.equal(transport.metrics.publicationToWsEnqueueSamples,0);
+  ws.send(JSON.stringify({type:'subscribe',ids:['backpack:MSFT.US','backpack:AAPL.US']}));
+  await until(()=>frames.some(f=>f.type==='delta'&&f.stocks.some((s:Stock)=>s.id==='backpack:AAPL.US'&&s.quote.price==='222')));
+  assert.deepEqual(frames.filter(f=>f.type==='delta').at(-1).stocks.map((s:Stock)=>s.id),['backpack:AAPL.US']);
   const revisions=frames.filter(f=>['snapshot','delta'].includes(f.type)).map(f=>f.revision);
   assert.ok(revisions.every((r,i)=>i===0||r>revisions[i-1]));
   ws.close();await until(()=>interests.length===0);
  }finally{ws.terminate();transport.close();feed.stop();await new Promise<void>(r=>http.close(()=>r()));}
 });
-test('in-memory fanout puts every changed row in the measured frame and measures membership snapshots',()=>{
+test('in-memory fanout puts every changed row and membership removal in measured deltas',()=>{
  const initial:Catalog={schemaVersion:1,mode:'live-read-only',receivedAt:iso,providers:[],stocks:[stock(),stock('AAPL.US')]};
  const feed=new RealtimeCatalog(async()=>initial,()=>now);let monotonic=10;
  feed.publish(initial);
@@ -127,6 +129,7 @@ test('in-memory fanout puts every changed row in the measured frame and measures
  (transport as unknown as {attach(socket:WebSocket):void}).attach(socket as unknown as WebSocket);
  try{
   assert.equal(socket.frames.filter(frame=>frame.type==='snapshot').length,1);
+  subscribe(socket,['backpack:MSFT.US','backpack:AAPL.US']);
   monotonic=15;
   const changed={...initial.stocks[1]!,quote:{...initial.stocks[1]!.quote,price:'222'}};
   feed.publish({...initial,stocks:[initial.stocks[0]!,changed]},
@@ -141,13 +144,109 @@ test('in-memory fanout puts every changed row in the measured frame and measures
   feed.publish({...initial,stocks:[initial.stocks[0]!]},
     {changedIds:[],removedIds:['backpack:AAPL.US'],membershipChanged:true,requestedAt:15});
   const membership=socket.frames.at(-1);
-  assert.equal(membership.type,'snapshot');
-  assert.deepEqual(membership.catalog.stocks.map((row:Stock)=>row.id),['backpack:MSFT.US']);
+  assert.equal(membership.type,'delta');
+  assert.deepEqual(membership.stocks,[]);
+  assert.deepEqual(membership.removedIds,['backpack:AAPL.US']);
+  assert.equal(socket.frames.filter(frame=>frame.type==='snapshot').length,1);
   assert.equal(transport.metrics.publicationToWsEnqueueLastMs,5);
   assert.equal(transport.metrics.publicationToWsEnqueueSamples,2);
  }finally{transport.close();feed.stop();}
 });
-test('unchanged periodic refresh sends an empty delta instead of repeating the full catalog snapshot',async()=>{
+test('viewport subscriptions echo only newly added rows while identical IDs retain provider-state acknowledgements',()=>{
+ const initial:Catalog={schemaVersion:1,mode:'live-read-only',receivedAt:iso,
+  providers:[{id:'backpack',status:'ok'}],stocks:[stock(),stock('AAPL.US'),stock('NVDA.US')]};
+ const feed=new RealtimeCatalog(()=>new Promise<Catalog>(()=>{}),()=>now);feed.publish(initial);
+ let interests:string[]=[];
+ const transport=new MarketSocket(createServer(),feed,{chart:async()=>{throw Error('unused')},
+  setInterest:ids=>{interests=[...ids]}},()=>now);
+ const socket=new MemorySocket();
+ (transport as unknown as {attach(socket:WebSocket):void}).attach(socket as unknown as WebSocket);
+ try{
+  assert.deepEqual(socket.frames[0].catalog.stocks.map((row:Stock)=>row.id),initial.stocks.map(row=>row.id));
+  subscribe(socket,['backpack:MSFT.US','backpack:AAPL.US']);
+  assert.deepEqual(socket.frames.at(-1).stocks.map((row:Stock)=>row.id),['backpack:MSFT.US','backpack:AAPL.US']);
+  const before=socket.frames.length;
+  subscribe(socket,['backpack:AAPL.US','backpack:MSFT.US','backpack:AAPL.US']);
+  assert.equal(socket.frames.length,before+1);
+  const unchanged=socket.frames.at(-1);
+  assert.equal(unchanged.type,'delta');assert.deepEqual(unchanged.stocks,[]);
+  assert.deepEqual(unchanged.providers,initial.providers);assert.deepEqual(unchanged.removedIds,[]);
+  assert.equal(unchanged.receivedAt,iso);assert.equal(new Set(interests).size,2);
+  subscribe(socket,['backpack:MSFT.US','backpack:AAPL.US','backpack:NVDA.US']);
+  assert.deepEqual(socket.frames.at(-1).stocks.map((row:Stock)=>row.id),['backpack:NVDA.US']);
+  assert.equal(socket.frames.filter(frame=>frame.type==='snapshot').length,1);
+  const revisions=socket.frames.map(frame=>frame.revision);
+  assert.ok(revisions.every((revision,index)=>index===0||revision>revisions[index-1]));
+ }finally{transport.close();feed.stop();}
+});
+test('removing and readding a viewport ID sends its latest observation without repeating retained rows',()=>{
+ const initial:Catalog={schemaVersion:1,mode:'live-read-only',receivedAt:iso,providers:[],stocks:[stock(),stock('AAPL.US')]};
+ const feed=new RealtimeCatalog(()=>new Promise<Catalog>(()=>{}),()=>now);feed.publish(initial);
+ let interests:string[]=[];
+ const transport=new MarketSocket(createServer(),feed,{chart:async()=>{throw Error('unused')},
+  setInterest:ids=>{interests=[...ids]}},()=>now);
+ const socket=new MemorySocket();
+ (transport as unknown as {attach(socket:WebSocket):void}).attach(socket as unknown as WebSocket);
+ try{
+  subscribe(socket,['backpack:MSFT.US','backpack:AAPL.US']);
+  subscribe(socket,['backpack:MSFT.US']);
+  assert.deepEqual(socket.frames.at(-1).stocks,[]);assert.deepEqual(interests,['backpack:MSFT.US']);
+  const changed={...initial.stocks[1]!,quote:{...initial.stocks[1]!.quote,price:'222'}};
+  const updated={...initial,providers:[{id:'backpack' as const,status:'stale' as const}],stocks:[initial.stocks[0]!,changed]};
+  const before=socket.frames.length;
+  feed.publish(updated,{changedIds:[changed.id],removedIds:[],membershipChanged:false,requestedAt:performance.now()});
+  assert.equal(socket.frames.slice(before).flatMap(frame=>frame.stocks ?? []).length,0,
+   'the provider-state delta must not include an offscreen observation');
+  subscribe(socket,['backpack:MSFT.US','backpack:AAPL.US']);
+  const readded=socket.frames.at(-1);
+  assert.deepEqual(readded.stocks.map((row:Stock)=>row.id),[changed.id]);
+  assert.equal(readded.stocks[0].quote.price,'222');assert.equal(readded.stocks[0].quote.receivedAt,iso);
+  assert.deepEqual(readded.providers,updated.providers);
+ }finally{transport.close();feed.stop();}
+});
+test('detail membership is included in subscription echoes without changing chart refresh and generation fencing',async()=>{
+ const initial:Catalog={schemaVersion:1,mode:'live-read-only',receivedAt:iso,providers:[],stocks:[stock(),stock('AAPL.US')]};
+ const feed=new RealtimeCatalog(()=>new Promise<Catalog>(()=>{}),()=>now);feed.publish(initial);
+ const requests:{id:string;range:Chart['range'];resolve:(chart:Chart)=>void}[]=[];let interests:string[]=[];
+ const transport=new MarketSocket(createServer(),feed,{chart:(id,range)=>new Promise<Chart>(resolve=>{requests.push({id,range,resolve});}),
+  setInterest:ids=>{interests=[...ids]}},()=>now);
+ const socket=new MemorySocket();
+ (transport as unknown as {attach(socket:WebSocket):void}).attach(socket as unknown as WebSocket);
+ const history=(range:Chart['range']):Chart=>({stockId:'backpack:AAPL.US',range,status:'ok',currency:'USDC',
+  basis:'external_reference_non_executable',receivedAt:iso,points:[{timestamp:iso,price:'100'}]});
+ try{
+  subscribe(socket,['backpack:MSFT.US']);
+  subscribe(socket,['backpack:MSFT.US'],{id:'backpack:AAPL.US',range:'ONE_DAY'});
+  assert.deepEqual(socket.frames.at(-1).stocks.map((row:Stock)=>row.id),['backpack:AAPL.US']);
+  assert.deepEqual(interests,['backpack:MSFT.US','backpack:AAPL.US']);assert.equal(requests.length,1);
+  subscribe(socket,['backpack:MSFT.US'],{id:'backpack:AAPL.US',range:'ONE_DAY'});
+  assert.deepEqual(socket.frames.at(-1).stocks,[]);assert.equal(requests.length,1,'the pending detail chart stays single-flight');
+  subscribe(socket,['backpack:MSFT.US'],{id:'backpack:AAPL.US',range:'ONE_WEEK'});
+  assert.deepEqual(socket.frames.at(-1).stocks,[]);assert.equal(requests.length,2);
+  requests[0]!.resolve(history('ONE_DAY'));await delay(0);
+  assert.equal(socket.frames.filter(frame=>frame.type==='chart').length,0,'the old detail range cannot publish after a change');
+  requests[1]!.resolve(history('ONE_WEEK'));await until(()=>socket.frames.some(frame=>frame.type==='chart'));
+  assert.equal(socket.frames.at(-1).chart.range,'ONE_WEEK');
+
+  const changed={...initial.stocks[1]!,quote:{...initial.stocks[1]!.quote,price:'222'}};
+  feed.publish({...initial,stocks:[initial.stocks[0]!,changed]},
+   {changedIds:[changed.id],removedIds:[],membershipChanged:false,requestedAt:performance.now()});
+  assert.equal(socket.frames.at(-1).type,'chart','a live detail change still publishes its cached chart');
+  assert.equal(requests.length,2,'chart cache refresh cadence is unchanged');
+
+  subscribe(socket,['backpack:MSFT.US','backpack:AAPL.US'],null);
+  assert.deepEqual(socket.frames.at(-1).stocks,[],'a detail ID retained in the viewport is not newly added');
+  subscribe(socket,['backpack:MSFT.US','backpack:AAPL.US'],{id:'backpack:AAPL.US',range:'ONE_DAY'});
+  assert.deepEqual(socket.frames.at(-1).stocks,[],'opening detail for a visible row does not echo it');
+  assert.equal(requests.length,3,'opening the detail view still requests its chart');
+  subscribe(socket,['backpack:MSFT.US'],null);
+  assert.deepEqual(interests,['backpack:MSFT.US']);assert.deepEqual(socket.frames.at(-1).stocks,[]);
+  subscribe(socket,['backpack:MSFT.US'],{id:'backpack:AAPL.US',range:'ONE_DAY'});
+  assert.deepEqual(socket.frames.at(-1).stocks.map((row:Stock)=>row.id),['backpack:AAPL.US']);
+  assert.equal(socket.frames.at(-1).stocks[0].quote.price,'222');assert.equal(requests.length,4);
+ }finally{transport.close();feed.stop();}
+});
+test('unchanged periodic refresh sends neither an empty delta nor another full snapshot',async()=>{
  const value:Catalog={schemaVersion:1,mode:'live-read-only',receivedAt:iso,providers:[{id:'backpack',status:'ok'}],stocks:[stock(),stock('AAPL.US')]};
  let loads=0;
  const app=await buildApp({catalog:async()=>{loads++;return value;},chart:async()=>{throw Error('unused')}},false,
@@ -157,10 +256,9 @@ test('unchanged periodic refresh sends an empty delta instead of repeating the f
  const ws=new WebSocket(`ws://127.0.0.1:${address.port}/v1/market/ws`);ws.on('message',raw=>frames.push(JSON.parse(raw.toString())));
  try{
   await until(()=>frames.some(frame=>frame.type==='snapshot'));
-  await until(()=>loads>=2&&frames.some(frame=>frame.type==='delta'));
+  await until(()=>loads>=2);
   assert.equal(frames.filter(frame=>frame.type==='snapshot').length,1);
-  assert.deepEqual(frames.find(frame=>frame.type==='delta').stocks,[]);
-  assert.deepEqual(frames.find(frame=>frame.type==='delta').removedIds,[]);
+  assert.equal(frames.filter(frame=>frame.type==='delta').length,0);
  }finally{ws.terminate();await app.close();}
 });
 test('single upstream restores its subscriptions after a dropped socket',async()=>{

@@ -26,6 +26,8 @@ export function snapshotAt(snapshot: Catalog, now: number, refreshFailed = false
       (stock.activity.updatedAt === null || fresh(stock.activity.updatedAt, now));
     return {
       ...stock,
+      robinhoodReference: stock.robinhoodReference && quoteFresh && stock.quote.price !== null && fresh(stock.robinhoodReference.receivedAt, now) && fresh(stock.robinhoodReference.asOf, now)
+        ? stock.robinhoodReference : undefined,
       quote: quoteFresh ? stock.quote : { ...stock.quote, price: null, changeAmount: null, changePercent: null },
       volume24h: activityFresh ? stock.volume24h : null,
       volume24hBasis: activityFresh ? stock.volume24hBasis : null,
@@ -117,17 +119,29 @@ export class RealtimeCatalog {
   publish(value: Catalog, mutation?: CatalogMutation): void {
     this.value = value;
     this.failed = false;
+    // A quiet backend still receives market updates, but no phone needs a
+    // freshly cloned, validated and diffed multi-thousand-row catalog. Keep
+    // the raw latest value so the next subscriber receives a fresh snapshot.
+    if (this.listeners.size === 0) {
+      this.lastEmitted = undefined;
+      return;
+    }
     const snapshot = this.current()!;
     this.emitSnapshot(snapshot, mutation);
   }
 
   subscribe(listener: Listener): () => void {
+    const first = this.listeners.size === 0;
     this.listeners.add(listener);
     const snapshot = this.current();
+    if (first) this.lastEmitted = snapshot;
     listener(snapshot ? { event: 'snapshot', data: snapshot } : {
       event: 'status', data: { state: 'loading', message: 'Connecting to market data. Updates arrive automatically.' },
     });
-    return () => { this.listeners.delete(listener); };
+    return () => {
+      this.listeners.delete(listener);
+      if (this.listeners.size === 0) this.lastEmitted = undefined;
+    };
   }
 
   start(): void {
@@ -177,6 +191,10 @@ export class RealtimeCatalog {
   }
 
   private emitSnapshot(snapshot: Catalog, sourceMutation?: CatalogMutation): void {
+    if (this.listeners.size === 0) {
+      this.lastEmitted = undefined;
+      return;
+    }
     const requestedAt = sourceMutation?.requestedAt ?? this.monotonicNow();
     const normalizedMutation = this.lastEmitted ? mutationBetween(this.lastEmitted, snapshot, requestedAt) : undefined;
     const mutation = mergeMutations(sourceMutation, normalizedMutation);

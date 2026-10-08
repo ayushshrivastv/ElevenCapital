@@ -16,7 +16,9 @@ const HttpsProviderPage = z.url().max(2_048).refine(value => {
 const BackedAsset = z.object({
   id: z.string(), name: z.string(), symbol: z.string(), isin: z.string(), logo: z.string().optional(),
   description: z.string().trim().min(1).max(20_000).optional().catch(undefined),
-  underlying: z.object({ symbol: z.string(), isin: z.string().nullable(), type: z.string().nullable(), currency: z.string(), listingCountry: z.string().nullable() }).nullable(),
+  underlying: z.object({ symbol: z.string(), isin: z.string().nullable(), type: z.string().nullable(), currency: z.string(),
+    listingCountry: z.string().nullable().optional(),
+    exchange: z.object({ country: z.string().nullable().optional() }).nullable().optional() }).nullable(),
   trading: z.object({ isTradingHalted: z.boolean().optional(), openNow: z.boolean().optional(), currentPeriod: z.string().optional(), nextChangeAt: z.string().nullable().optional() }).nullable().optional(),
   deployments: z.array(z.object({ network: z.string(), address: z.string() })).default([]),
 });
@@ -49,28 +51,40 @@ export type CatalogReconciliation = {
 };
 export type ProviderSnapshot = { stocks: Stock[]; partial: boolean; retainedQuotes?: boolean; reconciliation?: CatalogReconciliation };
 export type ProviderLoadOptions = { metadataOnly?: boolean; directory?: ClassificationDirectory; refreshClassification?: boolean; metadataTtlMs?: number };
-export type ClassifiedUnderlying = { symbol: string; isin: string | null; cusip: string | null; classification: 'company_share' | 'equity_etf' };
+export type ClassifiedUnderlying = { symbol: string; isin: string | null; cusip: string | null;
+  classification: 'company_share' | 'equity_etf'; inferredListingCountry?: 'US' };
 const idIsin = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function underlyingClassification(symbol: string, directory: ClassificationDirectory): Classification { return classifySymbol(symbol, directory); }
 export function classifyBacked(asset: BackedAssetInput, registry = Registry, directory = NasdaqBaseline): ClassifiedUnderlying | undefined {
   const u = asset.underlying;
   if (!u || !u.symbol || !u.isin) return undefined;
+  // The issuer sometimes omits listingCountry while naming the underlying's exchange.
+  // Only an explicit US exchange country can recover that missing field; the
+  // exchange directory must still independently classify the exact symbol.
+  const inferredCountry = u.listingCountry === undefined && u.exchange?.country === 'US' ? 'US' : undefined;
+  const listingCountry = u.listingCountry === undefined ? inferredCountry : u.listingCountry;
   const reviewed = registry.find(entry => entry.backed.symbol === asset.symbol || entry.backed.assetId === asset.id);
   if (reviewed) {
     if (reviewed.backed.assetId !== asset.id || reviewed.backed.symbol !== asset.symbol || reviewed.backed.productIsin !== asset.isin ||
-      reviewed.isin !== u.isin || reviewed.symbol !== u.symbol || u.type === 'ETF' || u.currency !== 'USD' || u.listingCountry !== 'US') return undefined;
-    return { symbol: reviewed.symbol, isin: reviewed.isin, cusip: reviewed.cusip, classification: 'company_share' };
+      reviewed.isin !== u.isin || reviewed.symbol !== u.symbol || u.type === 'ETF' || u.currency !== 'USD' ||
+      (u.listingCountry !== 'US' && u.listingCountry !== undefined)) return undefined;
+    return { symbol: reviewed.symbol, isin: reviewed.isin, cusip: reviewed.cusip, classification: 'company_share',
+      ...(u.listingCountry === undefined ? { inferredListingCountry: 'US' as const } : {}) };
   }
+  // The issuer no longer sends listingCountry on every asset. Only the exact
+  // reviewed US identity above can recover that classification without it.
+  if (listingCountry === undefined) return undefined;
   if (!uuid.test(asset.id) || !idIsin.test(asset.isin) || !idIsin.test(u.isin)) return undefined;
   let classification = underlyingClassification(u.symbol, directory);
   // Explicit issuer Equity metadata can classify foreign listings, without pretending a null type means equity.
-  if (u.listingCountry !== 'US') classification = u.type === 'Equity'
+  if (listingCountry !== 'US') classification = u.type === 'Equity'
     ? { kind: 'company_share', reason: 'Issuer explicitly identifies Equity.', source: 'https://api.xstocks.fi/api/v2/public/assets' }
-    : classifyForeign(u.isin, u.listingCountry);
+    : classifyForeign(u.isin, listingCountry);
   if (classification.kind !== 'company_share' && classification.kind !== 'equity_etf') return undefined;
   if ((u.type === 'ETF' && classification.kind !== 'equity_etf') || (u.type === 'Equity' && classification.kind !== 'company_share')) return undefined;
-  return { symbol: u.symbol, isin: u.isin, cusip: u.isin.startsWith('US') ? u.isin.slice(2, 11) : null, classification: classification.kind };
+  return { symbol: u.symbol, isin: u.isin, cusip: u.isin.startsWith('US') ? u.isin.slice(2, 11) : null,
+    classification: classification.kind, ...(inferredCountry ? { inferredListingCountry: inferredCountry } : {}) };
 }
 export function classifyBackpack(security: SecurityInput, registry = Registry, directory = NasdaqBaseline): ClassifiedUnderlying | undefined {
   if (!security.asset.endsWith('.US')) return undefined;
@@ -231,7 +245,9 @@ export async function loadBacked(http: GetJson, now = Date.now, options: Provide
       id: `backed:${asset.id}`, provider: 'backed', providerLabel: 'Backed xStocks', providerAssetId: asset.id,
       symbol: asset.symbol, name: asset.name, logoUrl: httpsLogo(asset.logo),
       description: featuredBackedDescription(verified.symbol, asset.name, asset.description), informationUrl: null,
-      underlying: { symbol: verified.symbol, isin: verified.isin, cusip: verified.cusip, listingCountry: asset.underlying?.listingCountry ?? null, currency: asset.underlying?.currency ?? null },
+      underlying: { symbol: verified.symbol, isin: verified.isin, cusip: verified.cusip,
+        listingCountry: asset.underlying?.listingCountry === undefined ? verified.inferredListingCountry ?? null : asset.underlying.listingCountry,
+        currency: asset.underlying?.currency ?? null },
       quote: { price, currency: 'USD', currencyBasis: asset.underlying?.currency === 'USD' ? 'underlying_metadata' : 'quoted_currency', changeAmount: null,
         changePercent: null, asOf: null, receivedAt, basis: 'provider_indicative_token' },
       volume24h: null, volume24hBasis: null,

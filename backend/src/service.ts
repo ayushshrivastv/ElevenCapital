@@ -3,6 +3,7 @@ import { Decimal } from 'decimal.js';
 import { AsyncCache, type CacheResult } from './cache.js';
 import { getJson, type GetJson } from './http.js';
 import { loadBacked, loadBackpack, loadPreStocks, type ProviderSnapshot } from './providers.js';
+import { loadRobinhood } from './robinhood.js';
 import { CatalogSchema, ChartSchema, DecimalString, type Catalog, type Chart, type ChartRange, type Provider, type Stock } from './schema.js';
 import { TokenStatisticsService } from './statistics.js';
 
@@ -29,6 +30,7 @@ export class MarketDataService {
   private readonly backedCache: AsyncCache<ProviderSnapshot>;
   private readonly backpackCache: AsyncCache<ProviderSnapshot>;
   private readonly preStocksCache: AsyncCache<ProviderSnapshot>;
+  private readonly robinhoodCache: AsyncCache<ProviderSnapshot>;
   private readonly charts = new Map<string, AsyncCache<Chart>>();
   private readonly statistics: TokenStatisticsService;
   private readonly previous = new Map<Provider, ProviderSnapshot>();
@@ -36,6 +38,7 @@ export class MarketDataService {
     this.backedCache = new AsyncCache(ttlMs, 300_000, now);
     this.backpackCache = new AsyncCache(ttlMs, 300_000, now);
     this.preStocksCache = new AsyncCache(ttlMs, 300_000, now);
+    this.robinhoodCache = new AsyncCache(ttlMs, 300_000, now);
     // Quote refreshes do not increase the rate of the separately cached Jupiter analytics feed.
     this.statistics = new TokenStatisticsService(http, now, 60_000);
   }
@@ -44,6 +47,7 @@ export class MarketDataService {
       this.backedCache.get(() => this.loadProvider('backed')),
       this.backpackCache.get(() => this.loadProvider('backpack')),
       this.preStocksCache.get(() => this.loadProvider('prestocks')),
+      this.robinhoodCache.get(() => this.loadProvider('robinhood')),
     ]);
     const providerStatus = (id: Provider, snapshot: CacheResult<ProviderSnapshot>): Catalog['providers'][number] => {
       if (snapshot.status === 'stale') return { id, status: 'stale', message: 'Provider refresh failed. Showing previously received data, at most five minutes old.' };
@@ -56,17 +60,23 @@ export class MarketDataService {
     const stocks = await this.statistics.enrich(snapshots.flatMap(snapshot => snapshot.value?.stocks ?? []));
     return CatalogSchema.parse({
       schemaVersion: 1, mode: 'live-read-only', receivedAt: new Date(this.now()).toISOString(),
-      providers: [providerStatus('backed', snapshots[0]), providerStatus('backpack', snapshots[1]), providerStatus('prestocks', snapshots[2])],
+      providers: [providerStatus('backed', snapshots[0]), providerStatus('backpack', snapshots[1]), providerStatus('prestocks', snapshots[2]), providerStatus('robinhood', snapshots[3])],
       stocks,
     });
   }
   private async loadProvider(id: Provider): Promise<ProviderSnapshot> {
     const latest = await (id === 'backed' ? loadBacked(this.http, this.now) : id === 'backpack'
-      ? loadBackpack(this.http, this.now) : loadPreStocks(this.http, this.now));
+      ? loadBackpack(this.http, this.now) : id === 'prestocks' ? loadPreStocks(this.http, this.now) : loadRobinhood(this.http, this.now));
     const previous = this.previous.get(id);
+    if (id === 'robinhood' && previous?.stocks.length && !latest.stocks.length && latest.reconciliation?.unresolved.length) {
+      throw new Error('Robinhood refresh returned no verifiable identities; retaining the previous dated catalog.');
+    }
     let retainedQuotes = false;
     const stocks = latest.stocks.map(stock => {
       if (stock.quote.price !== null) return stock;
+      // A multiplier change makes a previous Robinhood token reference unsafe to reuse.
+      // Only a failed whole-resource refresh may retain its last timestamped snapshot.
+      if (stock.provider === 'robinhood') return stock;
       const old = previous?.stocks.find(item => item.id === stock.id && item.providerAssetId === stock.providerAssetId &&
         item.underlying.isin === stock.underlying.isin && item.quote.currency === stock.quote.currency);
       const age = old?.quote.receivedAt ? this.now() - Date.parse(old.quote.receivedAt) : NaN;
@@ -86,6 +96,8 @@ export class MarketDataService {
       receivedAt: new Date(this.now()).toISOString(), points: [],
     });
     if (stock.provider === 'backed' || stock.provider === 'prestocks') return empty('unsupported');
+    if (stock.provider === 'robinhood') return { ...empty('unsupported'),
+      statusReason: 'Robinhood publishes current token references; verified Robinhood Chain token-trade history is unavailable.' };
     const key = `${id}:${range}`;
     let cache = this.charts.get(key);
     if (!cache) {

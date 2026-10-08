@@ -26,10 +26,10 @@ test('cached quotes become stale without erasing rows, and Backed status accurat
   const f=fixture();try{await f.ready();
     const before=f.service.snapshot();assert.equal(before.stocks.length,2);
     assert.match(before.providers.find(p=>p.id==='backed')!.message!,/1 labelled share references/);
-    assert.ok(before.providers.filter(p=>p.id!=='prestocks').every(p=>p.status==='ok'));
+    assert.ok(before.providers.filter(p=>p.id==='backed'||p.id==='backpack').every(p=>p.status==='ok'));
     f.state.now+=300001;const stale=f.service.snapshot();
-    assert.equal(stale.stocks.length,2);assert.ok(stale.providers.filter(p=>p.id!=='prestocks').every(p=>p.status==='stale'));
-    assert.ok(stale.providers.filter(p=>p.id!=='prestocks').every(p=>/cached quotes are stale/.test(p.message!)));
+    assert.equal(stale.stocks.length,2);assert.ok(stale.providers.filter(p=>p.id==='backed'||p.id==='backpack').every(p=>p.status==='stale'));
+    assert.ok(stale.providers.filter(p=>p.id==='backed'||p.id==='backpack').every(p=>/cached quotes are stale/.test(p.message!)));
     assert.equal(stale.stocks[0]!.quote.price,before.stocks[0]!.quote.price);
   }finally{f.service.stop();}
 });

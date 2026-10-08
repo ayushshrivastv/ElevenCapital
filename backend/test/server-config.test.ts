@@ -7,20 +7,75 @@ import { configureBackendServerEnvironment } from '../src/server-config.js';
 import { createGetJson } from '../src/http.js';
 
 const FIXTURE_KEY = 'test-jupiter-server-key';
+const FIXTURE_PANTA_KEY = 'pk_test_server_only_fixture';
 
 test('owner-only backend secrets configure Jupiter once without exposing values in status', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'eleven-backend-config-'));
   const path = join(directory, 'backend-secrets.json');
   const original = process.env.JUPITER_API_KEY;
+  const originalPyth = process.env.PYTH_API_KEY;
+  const originalPanta = process.env.PANTA_API_KEY;
   try {
     delete process.env.JUPITER_API_KEY;
+    delete process.env.PYTH_API_KEY;
+    delete process.env.PANTA_API_KEY;
     await writeFile(path, JSON.stringify({ JUPITER_API_KEY: FIXTURE_KEY }), { mode: 0o600 });
     const status = await configureBackendServerEnvironment(path);
-    assert.deepEqual(status, { jupiterApiKeyConfigured: true });
+    assert.deepEqual(status, { jupiterApiKeyConfigured: true, pythApiKeyConfigured: false, pantaApiKeyConfigured: false });
     assert.equal(process.env.JUPITER_API_KEY, FIXTURE_KEY);
     assert.ok(!JSON.stringify(status).includes(FIXTURE_KEY));
   } finally {
     if (original === undefined) delete process.env.JUPITER_API_KEY; else process.env.JUPITER_API_KEY = original;
+    if (originalPyth === undefined) delete process.env.PYTH_API_KEY; else process.env.PYTH_API_KEY = originalPyth;
+    if (originalPanta === undefined) delete process.env.PANTA_API_KEY; else process.env.PANTA_API_KEY = originalPanta;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Pyth, Jupiter and Panta credentials coexist in the protected file and status contains only booleans', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'eleven-pyth-config-'));
+  const path = join(directory, 'backend-secrets.json');
+  const originalJupiter = process.env.JUPITER_API_KEY, originalPyth = process.env.PYTH_API_KEY;
+  const originalPanta = process.env.PANTA_API_KEY;
+  try {
+    await writeFile(path, JSON.stringify({
+      JUPITER_API_KEY: FIXTURE_KEY,
+      PYTH_API_KEY: 'test-pyth-secret',
+      PANTA_API_KEY: FIXTURE_PANTA_KEY,
+    }), { mode: 0o600 });
+    const status = await configureBackendServerEnvironment(path);
+    assert.deepEqual(status, { jupiterApiKeyConfigured: true, pythApiKeyConfigured: true, pantaApiKeyConfigured: true });
+    assert.equal(process.env.JUPITER_API_KEY, FIXTURE_KEY);
+    assert.equal(process.env.PYTH_API_KEY, 'test-pyth-secret');
+    assert.equal(process.env.PANTA_API_KEY, FIXTURE_PANTA_KEY);
+    for (const secret of [FIXTURE_KEY, 'test-pyth-secret', FIXTURE_PANTA_KEY]) {
+      assert.ok(!JSON.stringify(status).includes(secret));
+    }
+    await writeFile(path, JSON.stringify({ PYTH_API_KEY: 'invalid\nsecret' }), { mode: 0o600 });
+    await assert.rejects(configureBackendServerEnvironment(path), error =>
+      /unsupported or invalid/.test(String(error)) && !String(error).includes('invalid\nsecret'));
+    await writeFile(path, JSON.stringify({ PANTA_API_KEY: 'invalid\nsecret' }), { mode: 0o600 });
+    await assert.rejects(configureBackendServerEnvironment(path), error =>
+      /unsupported or invalid/.test(String(error)) && !String(error).includes('invalid\nsecret'));
+  } finally {
+    if (originalJupiter === undefined) delete process.env.JUPITER_API_KEY; else process.env.JUPITER_API_KEY = originalJupiter;
+    if (originalPyth === undefined) delete process.env.PYTH_API_KEY; else process.env.PYTH_API_KEY = originalPyth;
+    if (originalPanta === undefined) delete process.env.PANTA_API_KEY; else process.env.PANTA_API_KEY = originalPanta;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('invalid Panta environment key is rejected without exposing its value', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'eleven-panta-config-'));
+  const path = join(directory, 'missing-backend-secrets.json');
+  const originalPanta = process.env.PANTA_API_KEY;
+  try {
+    process.env.PANTA_API_KEY = 'invalid\nserver-only-secret';
+    await assert.rejects(configureBackendServerEnvironment(path), error =>
+      /Panta API key configuration is invalid/.test(String(error)) &&
+      !String(error).includes(process.env.PANTA_API_KEY!));
+  } finally {
+    if (originalPanta === undefined) delete process.env.PANTA_API_KEY; else process.env.PANTA_API_KEY = originalPanta;
     await rm(directory, { recursive: true, force: true });
   }
 });

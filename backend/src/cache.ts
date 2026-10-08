@@ -37,13 +37,27 @@ export class AsyncCache<T> {
 
 export function limitConcurrency(maximum: number) {
   let running = 0;
-  const waiting: (() => void)[] = [];
-  return async <T>(work: () => Promise<T>): Promise<T> => {
-    if (running >= maximum) await new Promise<void>(resolve => waiting.push(resolve));
+  type Waiter = { resolve: () => void; signal?: AbortSignal; abort?: () => void };
+  const waiting: Waiter[] = [];
+  return async <T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    signal?.throwIfAborted();
+    if (running >= maximum) await new Promise<void>((resolve, reject) => {
+      const waiter: Waiter = { resolve, signal };
+      waiter.abort = () => {
+        const index = waiting.indexOf(waiter);
+        if (index >= 0) waiting.splice(index, 1);
+        reject(signal!.reason);
+      };
+      waiting.push(waiter);
+      signal?.addEventListener('abort', waiter.abort, { once: true });
+    });
     else running++;
-    try { return await work(); } finally {
+    try { signal?.throwIfAborted(); return await work(); } finally {
       const next = waiting.shift();
-      if (next) next(); else running--;
+      if (next) {
+        if (next.abort) next.signal?.removeEventListener('abort', next.abort);
+        next.resolve();
+      } else running--;
     }
   };
 }

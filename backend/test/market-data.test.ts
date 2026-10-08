@@ -38,6 +38,12 @@ function mockHttp(calls: { provider: string; path: string; query: unknown }[] = 
 }
 test('reviewed identities fail closed on conflicts; approved equity ETFs can be classified dynamically', () => {
   assert.equal(classifyBacked(asset)?.symbol, 'MSFT');
+  const withoutCountry = { ...asset, underlying: { symbol: 'MSFT', isin: msft.isin, type: null, currency: 'USD' } };
+  assert.equal(classifyBacked(withoutCountry)?.symbol, 'MSFT');
+  assert.equal(classifyBacked({ ...withoutCountry, id: 'imposter-id' }), undefined);
+  assert.equal(classifyBacked({ ...withoutCountry, isin: 'wrong-product' }), undefined);
+  assert.equal(classifyBacked({ ...withoutCountry, underlying: { ...withoutCountry.underlying, type: 'ETF' } }), undefined);
+  assert.equal(classifyBacked({ ...asset, underlying: { ...asset.underlying, listingCountry: null } }), undefined);
   assert.equal(classifyBacked({ ...asset, id: 'imposter-id' }), undefined);
   assert.equal(classifyBacked({ ...asset, isin: 'wrong-product' }), undefined);
   assert.equal(classifyBacked({ ...asset, underlying: { ...asset.underlying, isin: 'US0000000000' } }), undefined);
@@ -60,7 +66,7 @@ test('provider products retain separate identity, quote currencies, contract add
   const service = new MarketDataService(mockHttp(), () => now);
   const result = await service.catalog();
   assert.equal(result.stocks.length, 3);
-  assert.deepEqual(result.providers.map(p => p.status), ['ok', 'ok', 'ok']);
+  assert.deepEqual(result.providers.map(p => p.status), ['ok', 'ok', 'ok', 'unavailable']);
   const [backed, backpack, prestocks] = result.stocks;
   assert.equal(backed!.id, `backed:${msft.backed.assetId}`);
   assert.equal(backpack!.id, 'backpack:MSFT.US');
@@ -105,7 +111,7 @@ test('missing quotes remain null and explicitly partial; no default zero price',
   };
   const service = new MarketDataService(http, () => now);
   const result = await service.catalog();
-  assert.deepEqual(result.providers.map(p => p.status), ['unavailable', 'unavailable', 'ok']);
+  assert.deepEqual(result.providers.map(p => p.status), ['unavailable', 'unavailable', 'ok', 'unavailable']);
   assert.equal(result.stocks.length, 3);
   for (const stock of result.stocks.filter(stock => stock.provider !== 'prestocks')) {
     assert.equal(stock.quote.price, null);
@@ -163,7 +169,7 @@ test('provider outage has no fixture fallback and health is immediate without up
   const service = new MarketDataService(async () => { throw new Error('provider_failure'); }, () => now);
   const result = await service.catalog();
   assert.equal(result.stocks.length, 0);
-  assert.deepEqual(result.providers.map(p => p.status), ['unavailable', 'unavailable', 'unavailable']);
+  assert.deepEqual(result.providers.map(p => p.status), ['unavailable', 'unavailable', 'unavailable', 'unavailable']);
   let invoked = false;
   const app = await buildApp(new MarketDataService(async () => { invoked = true; throw new Error('never'); }));
   const health = await app.inject({ method: 'GET', url: '/health' });
@@ -213,7 +219,7 @@ test('service exposes provider stale state and original quote timestamps after u
   const first = await service.catalog();
   fail = true; clock += 61_000;
   const stale = await service.catalog();
-  assert.deepEqual(stale.providers.map(p => p.status), ['stale', 'stale', 'stale']);
+  assert.deepEqual(stale.providers.map(p => p.status), ['stale', 'stale', 'stale', 'unavailable']);
   assert.equal(stale.stocks[0]!.quote.receivedAt, first.stocks[0]!.quote.receivedAt);
   clock += 300_000;
   const expired = await service.catalog();

@@ -1,7 +1,10 @@
-import { AsyncCache } from './cache.js';
+import { AsyncCache, limitConcurrency } from './cache.js';
 import { performance } from 'node:perf_hooks';
-import { getJson, type GetJson } from './http.js';
+import { getJson, geckoTerminalDiagnostics, type GetJson } from './http.js';
 import { loadBacked, loadBackpack, loadPreStocks, type ProviderSnapshot } from './providers.js';
+import { featuredRobinhoodStocks, loadRobinhood } from './robinhood.js';
+import { RobinhoodMarketService } from './robinhood-market.js';
+import { snapshotAt } from './realtime.js';
 import { solanaMint, TokenStatisticsService } from './statistics.js';
 import { ProviderIds, StockSchema, ChartSchema, type Catalog, type Chart, type ChartRange, type Provider, type Stock } from './schema.js';
 import { candleRequest, normalizeCandles, UnknownStockError } from './service.js';
@@ -9,7 +12,7 @@ import { applyExternalTicker, BackpackLive } from './backpack-live.js';
 import { backpackActivity, nonnegativeAmount } from './activity.js';
 import { Decimal } from 'decimal.js';
 import { applyShareReference, findShareReference } from './share-reference.js';
-import { applyUnderlyingReference, normalizeUnderlyingReference, resolveUnderlyingSymbol, underlyingReferenceChartPoints,
+import { applyUnderlyingReference, matchesReviewedRobinhoodHistory, normalizeUnderlyingReference, resolveUnderlyingSymbol, reviewedRobinhoodHistorySymbol, underlyingReferenceChartPoints,
   type UnderlyingReference } from './underlying-reference.js';
 import type { CatalogMutation } from './market-update.js';
 import { TokenHistoryService } from './token-history.js';
@@ -41,10 +44,12 @@ export function rotatingAnalyticsTargets(stocks: readonly Stock[], interests: Re
 }
 function sameInstrument(a: Stock, b: Stock): boolean {
   const first = a.underlying, second = b.underlying;
+  const deployments = (stock: Stock) => stock.deployments.map(item => [item.network, item.address, item.decimals,
+    item.chainId ?? null, item.explorerUrl ?? null, item.depositEnabled, item.withdrawEnabled]);
   return a.providerAssetId === b.providerAssetId && a.symbol === b.symbol &&
     first.symbol === second.symbol && first.isin === second.isin && first.cusip === second.cusip &&
     (first.listingCountry ?? null) === (second.listingCountry ?? null) && (first.currency ?? null) === (second.currency ?? null) &&
-    JSON.stringify(a.deployments) === JSON.stringify(b.deployments);
+    JSON.stringify(deployments(a)) === JSON.stringify(deployments(b));
 }
 function freshObservation(stock: Stock, now: number): boolean {
   if (stock.quote.price === null || stock.quote.receivedAt === null) return false;
@@ -66,6 +71,8 @@ export function applyBackedIndicativePrice(stock: Stock, raw: unknown, received:
 export class LiveMarketService {
   private readonly stocks = new Map<string, Stock>();
   private readonly nativeBacked = new Map<string, Stock>();
+  private readonly nativeRobinhood = new Map<string, Stock>();
+  private readonly robinhoodMarkets: RobinhoodMarketService;
   private readonly referenceIds = new Map<string, string>();
   private readonly underlyingReferences = new Map<string, UnderlyingReference>();
   private readonly underlyingSymbols = new Map<string, string>();
@@ -86,6 +93,9 @@ export class LiveMarketService {
   private readonly upstream: BackpackLive;
   private metadataTimer?: ReturnType<typeof setInterval>;
   private preStocksTimer?: ReturnType<typeof setInterval>;
+  private robinhoodTimer?: ReturnType<typeof setInterval>;
+  private robinhoodHistoryTimer?: ReturnType<typeof setInterval>;
+  private robinhoodMarketTimer?: ReturnType<typeof setInterval>;
   private metadataRetryTimer?: ReturnType<typeof setInterval>;
   private quoteTimer?: ReturnType<typeof setInterval>;
   private analyticsTimer?: ReturnType<typeof setInterval>;
@@ -107,6 +117,10 @@ export class LiveMarketService {
   private analyticsPending = false;
   private visiblePending = false;
   private preStocksMetadataRequestedAt = Number.NEGATIVE_INFINITY;
+  private robinhoodMetadataRequestedAt = Number.NEGATIVE_INFINITY;
+  private robinhoodHistoryRequestedAt = Number.NEGATIVE_INFINITY;
+  private robinhoodHistoryPending = false;
+  private readonly robinhoodHistoryRun = limitConcurrency(3);
   private running = false;
   readonly metrics = { metadataRefreshes: 0, quoteRefreshes: 0, quoteErrors: 0, analyticsErrors: 0, published: 0,
     invalidUpdates: 0, lastInvalidFields: [] as string[], backedQuoteRefreshes: 0, backedQuoteErrors: 0,
@@ -114,12 +128,13 @@ export class LiveMarketService {
     lastQuoteLatencyMs: null as number | null, lastPublicationLatencyMs: null as number | null,
     maxPublicationLatencyMs: null as number | null, p95PublicationLatencyMs: null as number | null,
     p99PublicationLatencyMs: null as number | null,
-    publicationLatencySamples: 0 };
+    publicationLatencySamples: 0, robinhoodHistoryPrewarms: 0, robinhoodHistoryAvailable: 0 };
   constructor(private readonly http: GetJson = getJson, private readonly now = Date.now,
     private readonly monotonicNow = () => performance.now()) {
     this.statistics = new TokenStatisticsService(http, now, 60_000);
     this.visibleStatistics = new TokenStatisticsService(http, now, 5_000);
     this.tokenHistory = new TokenHistoryService(http, now);
+    this.robinhoodMarkets = new RobinhoodMarketService(http, now);
     this.upstream = new BackpackLive((symbol, raw, received) => {
       const id = `backpack:${symbol.replace(/_USDC$/, '')}`;
       const stock = this.stocks.get(id);
@@ -136,14 +151,19 @@ export class LiveMarketService {
     // PreStocks has one bounded catalog/price resource and no public socket. Poll it
     // independently while exact-mint Jupiter observations remain on the fast path.
     this.preStocksTimer = setInterval(() => { void this.refreshMetadata('prestocks'); }, 30_000);
+    // Read assets and references together so every price uses its current token multiplier.
+    this.robinhoodTimer = setInterval(() => { void this.refreshMetadata('robinhood'); }, 30_000);
+    this.robinhoodHistoryTimer = setInterval(() => { void this.prewarmRobinhoodHistory(); }, 60_000);
+    this.robinhoodMarketTimer = setInterval(() => { void this.refreshRobinhoodMarkets(); }, 60_000);
     this.metadataRetryTimer = setInterval(() => { void this.retryFailedMetadata(); }, 60_000);
     this.quoteTimer = setInterval(() => { void this.refreshQuotes(); void this.refreshBackedQuotes(); void this.refreshUnderlyingReferences(); }, 5_000);
     this.analyticsTimer = setInterval(() => { void this.refreshVisible(); void this.refreshAnalytics(); }, 5_000);
-    this.metadataTimer.unref(); this.preStocksTimer.unref(); this.metadataRetryTimer.unref(); this.quoteTimer.unref(); this.analyticsTimer.unref();
+    this.metadataTimer.unref(); this.preStocksTimer.unref(); this.robinhoodTimer.unref(); this.robinhoodHistoryTimer.unref(); this.robinhoodMarketTimer.unref(); this.metadataRetryTimer.unref(); this.quoteTimer.unref(); this.analyticsTimer.unref();
   }
   stop() {
     this.running = false;
-    for (const timer of [this.metadataTimer, this.preStocksTimer, this.metadataRetryTimer, this.quoteTimer, this.analyticsTimer]) if (timer) clearInterval(timer);
+    this.robinhoodMarkets.cancel();
+    for (const timer of [this.metadataTimer, this.preStocksTimer, this.robinhoodTimer, this.robinhoodHistoryTimer, this.robinhoodMarketTimer, this.metadataRetryTimer, this.quoteTimer, this.analyticsTimer]) if (timer) clearInterval(timer);
     if (this.publishTimer) clearTimeout(this.publishTimer);
     this.publishTimer = undefined; this.publishRequestedAt = undefined; this.lastPublishedAt = Number.NEGATIVE_INFINITY;
     this.changedIds.clear(); this.removedIds.clear(); this.membershipChanged = false;
@@ -151,6 +171,48 @@ export class LiveMarketService {
   }
   onUpdate(listener: (catalog: Catalog, mutation: CatalogMutation) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   async catalog(): Promise<Catalog> { this.start(); return this.snapshot(); }
+  /** Bound startup work to the official identities and first featured market batch; history warms independently. */
+  async prewarm(timeoutMs = 25_000): Promise<void> {
+    this.start();
+    const pending = this.metadataPending.get('robinhood');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([(async () => { await pending; await this.robinhoodMarkets.featuredReady(); })(),
+        new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); })]);
+    } finally { if (timer) clearTimeout(timer); }
+  }
+  async featuredCatalog(_provider: 'robinhood'): Promise<Catalog> {
+    this.start();
+    // The first market attempt gets its bounded warmup. Later refreshes cannot delay an existing snapshot.
+    if (!this.robinhoodMarkets.hasCompletedInitialFeaturedAttempt() ||
+      !featuredRobinhoodStocks([...this.nativeRobinhood.values()]).length) await this.prewarm();
+    const catalog = snapshotAt(this.snapshot(), this.now());
+    return { ...catalog, stocks: featuredRobinhoodStocks(catalog.stocks) };
+  }
+  private async prewarmRobinhoodHistory(): Promise<void> {
+    if (!this.running || this.robinhoodHistoryPending || this.now() - this.robinhoodHistoryRequestedAt < 60_000) return;
+    const targets = featuredRobinhoodStocks([...this.stocks.values()]);
+    if (!targets.length) return;
+    this.robinhoodHistoryRequestedAt = this.now(); this.robinhoodHistoryPending = true;
+    try {
+      const charts = await Promise.all(targets.map(stock => this.robinhoodHistoryRun(async () => {
+        if (!this.running || this.stocks.get(stock.id)?.underlying.isin !== stock.underlying.isin) return false;
+        try { return (await this.chart(stock.id, 'ONE_DAY')).status === 'ok'; } catch { return false; }
+      })));
+      if (this.running) { this.metrics.robinhoodHistoryPrewarms++; this.metrics.robinhoodHistoryAvailable = charts.filter(Boolean).length; }
+    } finally { this.robinhoodHistoryPending = false; }
+  }
+  private async refreshRobinhoodMarkets(): Promise<void> {
+    if (!this.running) return;
+    await this.robinhoodMarkets.refresh([...this.nativeRobinhood.values()], batch => {
+      if (!this.running) return;
+      for (const update of batch) {
+        const native = this.nativeRobinhood.get(update.id);
+        if (native && sameInstrument(native, update)) this.commit(this.robinhoodMarkets.project(native));
+      }
+      this.publish();
+    });
+  }
   snapshot(): Catalog {
     const stocks = [...this.stocks.values()];
     const providers: Catalog['providers'] = ProviderIds.map(id => {
@@ -164,6 +226,8 @@ export class LiveMarketService {
         ? `${fresh.length - references} fresh token quotes; ${references} labelled share references; ${rows.length - available.length} prices unavailable.`
         : id === 'prestocks'
           ? `${fresh.filter(stock => stock.quote.basis === 'onchain_token_market').length} exact-mint market quotes; ${fresh.filter(stock => stock.quote.basis === 'provider_indicative_token').length} fresh provider-indicative token prices; ${rows.length - available.length} prices unavailable.`
+          : id === 'robinhood'
+            ? `${fresh.filter(stock => stock.quote.basis === 'onchain_token_market').length} exact-contract spot market quotes; ${fresh.filter(stock => stock.quote.basis === 'provider_indicative_token').length} fresh issuer token references on Robinhood Chain (4663); ${rows.length - available.length} prices unavailable.`
           : `${fresh.length} of ${rows.length} fresh external-market references; not executable quotes.`;
       return { id, status: !rows.length ? 'unavailable' : this.sourceFailed.has(id) || stale > 0 || unresolved > 0 ? 'stale' : fresh.length ? 'ok' : 'unavailable',
         message: !rows.length ? this.sourceFailed.has(id) ? 'Catalog source unavailable; retrying automatically.' : 'Loading complete provider catalog.' :
@@ -179,6 +243,8 @@ export class LiveMarketService {
     // remains on the five-second visible path below.
     if ([...this.interests].some(id => id.startsWith('prestocks:')) &&
       this.now() - this.preStocksMetadataRequestedAt >= 30_000) void this.refreshMetadata('prestocks');
+    if ([...this.interests].some(id => id.startsWith('robinhood:')) &&
+      this.now() - this.robinhoodMetadataRequestedAt >= 30_000) void this.refreshMetadata('robinhood');
     this.syncUpstream();
     // Viewport work moves to the front of the next analytics batch. It never creates another worker.
     void this.refreshVisible();
@@ -191,14 +257,16 @@ export class LiveMarketService {
     return { checkedAt: new Date(this.now()).toISOString(), appCount: this.stocks.size,
       sources: [...this.source].map(([provider, snapshot]) => ({ provider, ...snapshot.reconciliation,
         appCount: [...this.stocks.values()].filter(stock => stock.provider === provider).length,
-        stale: this.sourceFailed.has(provider) })), metrics: { ...this.metrics, upstream: this.upstream.metrics,
-        visibleSubscriptions: this.interests.size, visibleInterestIds: [...this.interests].sort() }, delivery: {
+        stale: this.sourceFailed.has(provider) })), robinhoodMarkets: this.robinhoodMarkets.observations(), metrics: { ...this.metrics, robinhoodMarkets: { ...this.robinhoodMarkets.metrics }, upstream: this.upstream.metrics,
+        visibleSubscriptions: this.interests.size, visibleInterestIds: [...this.interests].sort() },
+      publicRequests: { geckoterminal: geckoTerminalDiagnostics() }, delivery: {
         scope: 'Catalog publication request after provider validation through WebSocket enqueue.',
         publishWindowMs: PUBLICATION_INTERVAL_MS, targetP95Ms: 50, targetP99Ms: 100,
       }, limits: {
         backed: 'Public exact-token analytics plus exact-mint GeckoTerminal pool OHLCV when available; labelled share history remains a fallback.',
         backpack: 'External reference ticker stream. RFQ-only products have no public spot order book.',
         prestocks: 'Public product snapshots, exact-mint analytics and exact-mint GeckoTerminal pool OHLCV when available; no provider WebSocket.',
+        robinhood: 'Official Robinhood Chain (4663) identities and issuer reference fallback. GeckoTerminal contract-keyed USD token prices supply coherent price and 24h return; independently verified exact-base spot pools supply selected-pool USD turnover and net only with complete matching USD buy/sell aggregates. Quote/activity fetch clocks remain separate; pool errors do not discard token prices. Share history warms independently; purchases remain unavailable.',
       } };
   }
   private syncUpstream() {
@@ -213,16 +281,20 @@ export class LiveMarketService {
   private async refreshMetadata(id: Provider): Promise<void> {
     const active = this.metadataPending.get(id); if (active) return active;
     if (id === 'prestocks') this.preStocksMetadataRequestedAt = this.now();
+    if (id === 'robinhood') this.robinhoodMetadataRequestedAt = this.now();
     const task = (async () => {
       try {
         const latest = await (id === 'backed' ? loadBacked(this.http, this.now, { metadataOnly: true, refreshClassification: true }) :
           id === 'backpack' ? loadBackpack(this.http, this.now, { refreshClassification: true, metadataTtlMs: 300_000 }) :
-            loadPreStocks(this.http, this.now));
+            id === 'prestocks' ? loadPreStocks(this.http, this.now) : loadRobinhood(this.http, this.now, { refreshClassification: true }));
         if (!this.running) return;
+        if (id === 'robinhood' && this.source.get(id)?.stocks.length && !latest.stocks.length && latest.reconciliation?.unresolved.length) {
+          throw new Error('Robinhood refresh returned no verifiable identities; retaining the previous dated catalog.');
+        }
         const identities = new Set(latest.stocks.map(stock => stock.id));
         for (const [key, old] of this.stocks) if (old.provider === id && !identities.has(key)) {
           this.removeFromCatalog(key); this.history.delete(key); this.wsSourceTimes.delete(key);
-          this.nativeBacked.delete(key); this.referenceIds.delete(key);
+          this.nativeBacked.delete(key); this.nativeRobinhood.delete(key); this.referenceIds.delete(key);
           this.underlyingReferences.delete(key); this.underlyingSymbols.delete(key); this.unresolvedUnderlyingSymbols.delete(key);
           if (old.provider === 'backpack') this.backpackByUnderlying.delete(old.underlying.symbol);
           for (const cacheKey of this.chartCaches.keys()) if (cacheKey.startsWith(`${key}:`)) this.chartCaches.delete(cacheKey);
@@ -236,14 +308,16 @@ export class LiveMarketService {
             for (const cacheKey of this.chartCaches.keys()) if (cacheKey.startsWith(`${item.id}:`)) this.chartCaches.delete(cacheKey);
           }
           const keepPreviousQuote = previous && previous.quote.price !== null &&
+            id !== 'robinhood' &&
             (id !== 'prestocks' || (previous.quote.basis === 'onchain_token_market' && freshObservation(previous, this.now())));
-          const merged = same ? { ...item, statistics: previous.statistics,
+          const merged = same && id !== 'robinhood' ? { ...item, statistics: previous.statistics,
             quote: keepPreviousQuote ? previous.quote : item.quote,
             activity: previous.activity.volume24h !== null ? previous.activity : item.activity,
             volume24h: previous.volume24h ?? item.volume24h, volume24hBasis: previous.volume24hBasis ?? item.volume24hBasis } : item;
           this.store(merged);
         }
         this.source.set(id, latest); this.sourceFailed.delete(id); this.metrics.metadataRefreshes++;
+        if (id === 'robinhood') { void this.prewarmRobinhoodHistory(); void this.refreshRobinhoodMarkets(); }
         if (id === 'backpack') for (const native of this.nativeBacked.values()) this.store(native);
         this.publish(); void this.refreshVisible(); void this.refreshAnalytics();
         if (id === 'backed') {
@@ -440,6 +514,9 @@ export class LiveMarketService {
     } else if (stock.provider === 'backpack') {
       this.commit(stock); this.backpackByUnderlying.set(stock.underlying.symbol, stock);
       for (const native of this.nativeBacked.values()) if (native.underlying.symbol === stock.underlying.symbol) this.store(native);
+    } else if (stock.provider === 'robinhood') {
+      this.nativeRobinhood.set(stock.id, stock);
+      this.commit(this.robinhoodMarkets.project(stock));
     } else this.commit(stock);
   }
   private removeFromCatalog(id: string): boolean {
@@ -539,7 +616,7 @@ export class LiveMarketService {
   /** Token-priced listings can still need share history when no exact-token pool has candles.
    * Resolve the issuer ISIN, never a guessed ticker or a conflicting provider identity. */
   private async underlyingHistoryReference(stock: Stock, range: ChartRange): Promise<UnderlyingReference | null> {
-    if (stock.provider !== 'backed' ||
+    if ((stock.provider !== 'backed' && stock.provider !== 'robinhood') ||
       stock.underlying.listingCountry !== 'US' || stock.underlying.currency !== 'USD' || !stock.underlying.isin) return null;
     const now = this.now();
     const request = range === 'ONE_HOUR' ? { interval: '5m', span: '1d', historyWindowMs: 86_400_000 } :
@@ -556,11 +633,15 @@ export class LiveMarketService {
     }
     const result = await cache.get(async () => {
       const search = await this.http('yahoo', '/v1/finance/search', { q: stock.underlying.isin!, quotesCount: '8', newsCount: '0' });
-      const symbol = resolveUnderlyingSymbol(search, stock);
-      if (!symbol) return null;
+      const resolved = resolveUnderlyingSymbol(search, stock);
+      const symbol = resolved ?? reviewedRobinhoodHistorySymbol(stock);
+      if (!symbol) throw new Error('No exact-ISIN underlying listing could be verified.');
       const raw = await this.http('yahoo', `/v8/finance/chart/${encodeURIComponent(symbol)}`,
         { interval: request.interval, range: request.span, includePrePost: 'true' });
-      return normalizeUnderlyingReference(raw, symbol, this.now(), request.historyWindowMs);
+      if (!resolved && !matchesReviewedRobinhoodHistory(raw, stock)) throw new Error('Reviewed underlying share history failed its exact US listing checks.');
+      const reference = normalizeUnderlyingReference(raw, symbol, this.now(), request.historyWindowMs);
+      if (!reference) throw new Error('Underlying history response did not match the verified listing.');
+      return reference;
     });
     return result.value ?? null;
   }
@@ -570,6 +651,19 @@ export class LiveMarketService {
     if (!stock) throw new UnknownStockError('Unknown current stock');
     const base: Chart = { stockId: id, range, status: 'unavailable', currency: stock.quote.currency,
       basis: stock.quote.basis, receivedAt: new Date(this.now()).toISOString(), points: [] };
+
+    if (stock.provider === 'robinhood') {
+      const reference = await this.underlyingHistoryReference(stock, range);
+      const since = Number(candleRequest(range, this.now()).startTime) * 1000;
+      // These are actual historical share closes. No current token factor or token price is projected onto them.
+      const points = reference?.points.filter(point => Date.parse(point.timestamp) >= since) ?? [];
+      if (reference && points.length >= 3) return ChartSchema.parse({ ...base, status: 'ok', points,
+        basis: 'underlying_share_reference', currency: 'USD', receivedAt: reference.fetchedAt,
+        statusReason: 'Yahoo history for the exact ISIN-verified US/USD underlying share. Historical prices describe underlying shares; the current token multiplier is not applied. This is not Robinhood token trading history.' +
+          (this.now() - Date.parse(reference.fetchedAt) >= 60_000 ? ' History refresh is delayed; the original timestamp is retained for this cached share history.' : '') });
+      return { ...base, status: 'unavailable', basis: 'underlying_share_reference',
+        statusReason: 'Robinhood Chain token-trade history is unavailable. No usable exact-ISIN verified underlying-share history is currently available.' };
+    }
 
     if (stock.provider === 'backed' || stock.provider === 'prestocks') {
       const mint = solanaMint(stock.deployments);

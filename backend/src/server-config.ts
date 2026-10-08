@@ -6,8 +6,12 @@ import { join } from 'node:path';
 export const BACKEND_SECRETS_PATH = join(homedir(), 'Library', 'Application Support', 'ElevenCapital', 'backend-secrets.json');
 const MAX_SECRETS_BYTES = 16_384;
 
-type BackendSecrets = { JUPITER_API_KEY?: string };
-export type BackendSecretStatus = Readonly<{ jupiterApiKeyConfigured: boolean }>;
+type BackendSecrets = { JUPITER_API_KEY?: string; PYTH_API_KEY?: string; PANTA_API_KEY?: string };
+export type BackendSecretStatus = Readonly<{
+  jupiterApiKeyConfigured: boolean;
+  pythApiKeyConfigured: boolean;
+  pantaApiKeyConfigured: boolean;
+}>;
 
 function validApiKey(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 2_048 && value.trim() === value &&
@@ -41,11 +45,15 @@ async function readSecrets(path: string): Promise<BackendSecrets> {
       throw new Error('Backend secrets file must contain a JSON object.');
     }
     const record = parsed as Record<string, unknown>;
-    if (Object.keys(record).some(key => key !== 'JUPITER_API_KEY') ||
-      (record.JUPITER_API_KEY !== undefined && !validApiKey(record.JUPITER_API_KEY))) {
+    if (Object.keys(record).some(key => key !== 'JUPITER_API_KEY' && key !== 'PYTH_API_KEY' && key !== 'PANTA_API_KEY') ||
+      (record.JUPITER_API_KEY !== undefined && !validApiKey(record.JUPITER_API_KEY)) ||
+      (record.PYTH_API_KEY !== undefined && !validApiKey(record.PYTH_API_KEY)) ||
+      (record.PANTA_API_KEY !== undefined && !validApiKey(record.PANTA_API_KEY))) {
       throw new Error('Backend secrets file contains unsupported or invalid configuration.');
     }
-    return record.JUPITER_API_KEY === undefined ? {} : { JUPITER_API_KEY: record.JUPITER_API_KEY };
+    return { ...(record.JUPITER_API_KEY === undefined ? {} : { JUPITER_API_KEY: record.JUPITER_API_KEY }),
+      ...(record.PYTH_API_KEY === undefined ? {} : { PYTH_API_KEY: record.PYTH_API_KEY }),
+      ...(record.PANTA_API_KEY === undefined ? {} : { PANTA_API_KEY: record.PANTA_API_KEY }) };
   } finally { await handle.close(); }
 }
 
@@ -53,7 +61,17 @@ async function readSecrets(path: string): Promise<BackendSecrets> {
 export async function configureBackendServerEnvironment(path = BACKEND_SECRETS_PATH): Promise<BackendSecretStatus> {
   const secrets = await readSecrets(path);
   if (secrets.JUPITER_API_KEY !== undefined) process.env.JUPITER_API_KEY = secrets.JUPITER_API_KEY;
+  if (secrets.PYTH_API_KEY !== undefined) process.env.PYTH_API_KEY = secrets.PYTH_API_KEY;
+  if (secrets.PANTA_API_KEY !== undefined) process.env.PANTA_API_KEY = secrets.PANTA_API_KEY;
   const configured = process.env.JUPITER_API_KEY;
   if (configured !== undefined && !validApiKey(configured)) throw new Error('Jupiter API key configuration is invalid.');
-  return Object.freeze({ jupiterApiKeyConfigured: configured !== undefined });
+  const pythConfigured = process.env.PYTH_API_KEY;
+  if (pythConfigured !== undefined && !validApiKey(pythConfigured)) throw new Error('Pyth API key configuration is invalid.');
+  const pantaConfigured = process.env.PANTA_API_KEY;
+  if (pantaConfigured !== undefined && !validApiKey(pantaConfigured)) throw new Error('Panta API key configuration is invalid.');
+  return Object.freeze({
+    jupiterApiKeyConfigured: configured !== undefined,
+    pythApiKeyConfigured: pythConfigured !== undefined,
+    pantaApiKeyConfigured: pantaConfigured !== undefined,
+  });
 }

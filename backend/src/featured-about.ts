@@ -21,6 +21,14 @@ const FeaturedCompanySummaries: Readonly<Record<string, string>> = {
   AMD: 'AMD designs processors, graphics chips and adaptive computing products for data centers, PCs and embedded devices.',
   NKE: 'Nike designs and sells athletic footwear, apparel, equipment and accessories under the Nike and Jordan brands.',
   AVGO: 'Broadcom develops semiconductor and infrastructure software products.',
+  PLTR: 'Palantir develops software that integrates data, analytics and AI into government and commercial operations. Its platforms include Gotham, Foundry, Apollo and AIP.',
+  ORCL: 'Oracle provides database software, cloud infrastructure and enterprise applications. Its products support business functions such as finance, human resources, supply chains and healthcare.',
+  ADBE: 'Adobe develops software for creative work, digital documents and customer experiences. Its products include Creative Cloud, Acrobat, Adobe Express and Experience Cloud.',
+  CRM: 'Salesforce provides cloud software for managing customer relationships, sales, service, marketing and commerce. Its platform combines customer data, automation and AI tools for businesses.',
+  INTC: 'Intel designs and manufactures processors and other computing technologies for PCs, data centers, cloud and edge systems. It also provides semiconductor manufacturing and advanced packaging through Intel Foundry.',
+  COST: 'Costco operates membership warehouses and online stores selling groceries, household goods and other merchandise. Its retail offering includes Kirkland Signature products and services such as fuel and optical care.',
+  TSM: 'Taiwan Semiconductor Manufacturing Company manufactures integrated circuits for other semiconductor companies. Its services include wafer fabrication, advanced packaging and support for customers’ chip designs.',
+  CSCO: 'Cisco provides networking, security, collaboration and observability technology. Its hardware, software and services help organizations connect and manage their digital infrastructure.',
 };
 
 /** Accepts a bare ticker, a Backpack .US security, or a Backed xStock symbol. */

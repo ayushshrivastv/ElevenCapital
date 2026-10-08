@@ -8,6 +8,39 @@ const ExchangeByCountry: Record<string, Set<string>> = {
   GB: new Set(['LSE']), HK: new Set(['HKG']), DE: new Set(['GER']), ES: new Set(['MCE']),
 };
 const YahooSymbol = /^[A-Za-z0-9.^=_-]{1,40}$/;
+// Exact issuer/SEC-reviewed identities, used only where Yahoo's ISIN search returns no listing.
+// Alphabet Class A (not GOOG Class C): https://www.sec.gov/Archives/edgar/data/1288776/000119312515336550/d56649d8k.htm
+// TSMC NYSE ADS (not Taiwan 2330): https://investor.tsmc.com/system/files/2026-07/Final%20Dividend%20Announcement_4Q25.pdf
+const ReviewedRobinhoodListings: Readonly<Record<string, { symbol: string; exchange: string; fullExchange: string }>> = {
+  US02079K3059: { symbol: 'GOOGL', exchange: 'NMS', fullExchange: 'NasdaqGS' },
+  US8740391003: { symbol: 'TSM', exchange: 'NYQ', fullExchange: 'NYSE' },
+};
+
+export function reviewedRobinhoodHistorySymbol(stock: Stock): string | null {
+  const listing = stock.underlying.isin ? ReviewedRobinhoodListings[stock.underlying.isin] : undefined;
+  const deployment = stock.deployments[0];
+  return listing && stock.provider === 'robinhood' && stock.symbol === listing.symbol && stock.underlying.symbol === listing.symbol &&
+    stock.underlying.listingCountry === 'US' && stock.underlying.currency === 'USD' && stock.deployments.length === 1 &&
+    deployment?.network === 'Robinhood Chain' && deployment.chainId === 4663 && /^0x[0-9a-fA-F]{40}$/.test(deployment.address) &&
+    !/^0x0{40}$/i.test(deployment.address) ? listing.symbol : null;
+}
+
+/** A pinned symbol still requires Yahoo to confirm the exact US share listing. */
+export function matchesReviewedRobinhoodHistory(raw: unknown, stock: Stock): boolean {
+  const symbol = reviewedRobinhoodHistorySymbol(stock);
+  if (!symbol || !stock.underlying.isin) return false;
+  const listing = ReviewedRobinhoodListings[stock.underlying.isin]!;
+  const root = typeof raw === 'object' && raw !== null ? raw as Record<string, unknown> : {};
+  const chart = typeof root.chart === 'object' && root.chart !== null ? root.chart as Record<string, unknown> : {};
+  const results = Array.isArray(chart.result) ? chart.result : [];
+  if (results.length !== 1 || typeof results[0] !== 'object' || results[0] === null) return false;
+  const result = results[0] as Record<string, unknown>;
+  const meta = typeof result.meta === 'object' && result.meta !== null ? result.meta as Record<string, unknown> : {};
+  return meta.symbol === symbol && meta.currency === 'USD' && meta.instrumentType === 'EQUITY' &&
+    (meta.exchangeName === listing.exchange || meta.fullExchangeName === listing.fullExchange) &&
+    (meta.exchangeName === undefined || meta.exchangeName === listing.exchange) &&
+    (meta.fullExchangeName === undefined || meta.fullExchangeName === listing.fullExchange);
+}
 
 export type UnderlyingReference = {
   symbol: string;

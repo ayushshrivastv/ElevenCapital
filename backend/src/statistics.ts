@@ -37,6 +37,11 @@ export function unavailableStatistics(mint: string | null, reason: string, sourc
   };
 }
 export function initialStatistics(deployments: Deployment[]): Statistics {
+  const robinhood = deployments.filter(item => item.network === 'Robinhood Chain' && item.chainId === 4663 && /^0x[0-9a-fA-F]{40}$/.test(item.address));
+  if (robinhood.length === 1) {
+    const reason = 'Robinhood Chain token statistics are unavailable. Underlying-share volume and mint/burn activity are not token-market trading statistics.';
+    return { ...unavailableStatistics(null, reason), scope: 'robinhood_chain_token', network: 'robinhood_chain', mint: robinhood[0]!.address };
+  }
   const mint = solanaMint(deployments);
   return unavailableStatistics(mint, mint ? 'Statistics have not been received yet.' : 'No verified Solana deployment is available for this stock.');
 }

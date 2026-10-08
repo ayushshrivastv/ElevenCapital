@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classifySymbol, classifyForeign, parseNasdaqDirectory, type ClassificationDirectory } from '../src/classification.js';
 import { backpackCompanyLogo, loadBacked, loadBackpack } from '../src/providers.js';
+import { Registry } from '../src/registry.js';
+import { portfolioAssets } from '../src/portfolio.js';
+import { encodeBase58 } from '../src/transfer.js';
 import { normalizeJupiterQuotes, TokenStatisticsService, initialStatistics } from '../src/statistics.js';
 import { unavailableJupiterActivity } from '../src/activity.js';
 import type { GetJson } from '../src/http.js';
@@ -44,6 +47,53 @@ test('all Backed pages render newly classified assets with no per-symbol price c
   assert.equal(result.stocks[0]!.marketState?.status,'unknown');
   assert.equal(result.stocks[0]!.description,'Provider-authored xStock product description');
   assert.equal(result.stocks[0]!.informationUrl,null,'the asset response supplies no provider-owned product page URL');
+});
+test('current Backed metadata without listing country restores all reviewed wallet deployments but excludes unreviewed identities', async () => {
+  const reviewed = Registry.map((entry, index) => {
+    const bytes = Buffer.alloc(32); bytes.writeUInt32LE(index + 1);
+    return { id: entry.backed.assetId, name: `${entry.symbol} xStock`, symbol: entry.backed.symbol,
+      isin: entry.backed.productIsin, underlying: { symbol: entry.symbol, isin: entry.isin, type: null,
+        currency: 'USD', exchange: null }, trading: null,
+      deployments: [{ network: 'Solana', address: encodeBase58(bytes) }] };
+  });
+  const unreviewed = { ...asset(), underlying: { symbol: 'NEW', isin: 'US1234567890', type: null,
+    currency: 'USD', exchange: null } };
+  const http: GetJson = async () => ({ nodes: [...reviewed, unreviewed], page: { currentPage: 0, hasNextPage: false } });
+  const result = await loadBacked(http, () => NOW, { metadataOnly: true, directory });
+  assert.equal(result.stocks.length, Registry.length);
+  assert.equal(result.reconciliation?.unresolved.length, 1);
+  assert.ok(result.stocks.every(stock => stock.underlying.listingCountry === 'US'));
+  const expected = Registry.map(entry => `backed:${entry.backed.assetId}`);
+  const catalog = { stocks: result.stocks } as Parameters<typeof portfolioAssets>[0];
+  assert.equal(portfolioAssets(catalog, expected).complete, true);
+});
+test('issuer US exchange identity restores SpaceX xStock without listingCountry', async () => {
+  const spcxx = { id: 'eba060bd-f7b3-49e3-8ef1-99869351b434', symbol: 'SPCXx', name: 'SpaceX xStock',
+    isin: 'CH1564487366', underlying: { symbol: 'SPCX', isin: 'US84615Q1031', type: null,
+      currency: 'USD', exchange: { mic: 'XNAS', country: 'US' } }, deployments: [], trading: null };
+  const http: GetJson = async () => ({ nodes: [spcxx], page: { currentPage: 0, hasNextPage: false } });
+  const result = await loadBacked(http, () => NOW, { metadataOnly: true });
+  assert.equal(result.stocks[0]?.id, 'backed:eba060bd-f7b3-49e3-8ef1-99869351b434');
+  assert.equal(result.stocks[0]?.underlying.listingCountry, 'US');
+  assert.equal(result.reconciliation?.unresolved.length, 0);
+  const withoutExchange = { ...spcxx, underlying: { ...spcxx.underlying, exchange: null } };
+  const explicitUnknown = { ...spcxx, underlying: { ...spcxx.underlying, listingCountry: null } };
+  for (const rejected of [withoutExchange, explicitUnknown]) {
+    const response = await loadBacked(async () => ({ nodes: [rejected], page: { currentPage: 0, hasNextPage: false } }),
+      () => NOW, { metadataOnly: true });
+    assert.equal(response.stocks.length, 0);
+  }
+});
+test('explicit foreign listing remains foreign and explicit null cannot borrow the reviewed US fallback', async () => {
+  const foreign = { ...asset('SAP', '00000000-0000-0000-0000-000000000009'),
+    underlying: { symbol: 'SAP', isin: 'DE0007664039', type: null, currency: 'EUR', listingCountry: 'DE' } };
+  const nullCountry = { ...asset(), underlying: { symbol: 'NEW', isin: 'US1234567890', type: null,
+    currency: 'USD', listingCountry: null } };
+  const http: GetJson = async () => ({ nodes: [foreign, nullCountry], page: { currentPage: 0, hasNextPage: false } });
+  const result = await loadBacked(http, () => NOW, { metadataOnly: true, directory });
+  assert.equal(result.stocks.length, 1);
+  assert.equal(result.stocks[0]?.underlying.listingCountry, 'DE');
+  assert.equal(result.reconciliation?.unresolved.length, 1);
 });
 test('nullable Backpack CUSIP does not hide new stocks and metadata caching is separate from ticker refresh', async () => {
   const calls: Record<string,number> = {};

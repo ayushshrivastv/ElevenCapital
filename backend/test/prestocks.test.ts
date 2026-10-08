@@ -216,7 +216,6 @@ test('wallet portfolio dynamically discovers PreStocks mint holdings from the li
   };
   const result = await new WalletPortfolioService(async () => catalog, upstream, () => NOW).portfolio({ wallets: [
     { chain: 'SOLANA', address: '11111111111111111111111111111111' },
-    { chain: 'ETHEREUM', address: '0x1111111111111111111111111111111111111111' },
   ] });
   assert.equal(sawMint, true);
   assert.deepEqual(result.holdings, [{ stockId: stock.id, quantity: '2.5', valueUsd: '30' }]);

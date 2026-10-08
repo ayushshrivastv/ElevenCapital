@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { featuredCompanySummary } from '../src/featured-about.js';
+import { ROBINHOOD_FEATURED_SYMBOLS } from '../src/robinhood.js';
 
 test('every featured Backpack and xStocks company has a business summary', () => {
   const featured = [
@@ -14,4 +15,10 @@ test('every featured Backpack and xStocks company has a business summary', () =>
     assert.equal(featuredCompanySummary(`${symbol}x`), summary);
   }
   assert.equal(featuredCompanySummary('UNKNOWN'), null);
+});
+test('all20 official Robinhood featured companies have business descriptions, including the replacement listings', () => {
+  for (const symbol of ROBINHOOD_FEATURED_SYMBOLS) assert.ok(featuredCompanySummary(symbol)!.length > 45, symbol);
+  assert.match(featuredCompanySummary('AVGO')!, /semiconductor and infrastructure software/);
+  assert.match(featuredCompanySummary('CRM')!, /customer relationships/);
+  assert.match(featuredCompanySummary('TSM')!, /manufactures integrated circuits/);
 });

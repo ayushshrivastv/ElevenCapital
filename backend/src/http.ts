@@ -1,9 +1,10 @@
 import { parse } from 'lossless-json';
+import { setTimeout as delay } from 'node:timers/promises';
 import { limitConcurrency } from './cache.js';
 
-export type GetJson = (provider: 'backed' | 'backpack' | 'prestocks' | 'jupiter' | 'nasdaq' | 'yahoo' | 'geckoterminal', path: string, query?: Record<string, string>, signal?: AbortSignal) => Promise<unknown>;
+export type GetJson = (provider: 'backed' | 'backpack' | 'prestocks' | 'robinhood' | 'jupiter' | 'nasdaq' | 'yahoo' | 'geckoterminal', path: string, query?: Record<string, string>, signal?: AbortSignal) => Promise<unknown>;
 export type GetJsonOptions = { jupiterApiKey?: () => string | undefined };
-const Origins = { backed: 'https://api.xstocks.fi', backpack: 'https://api.backpack.exchange', prestocks: 'https://prestocks.com', jupiter: 'https://api.jup.ag', nasdaq: 'https://www.nasdaqtrader.com', yahoo: 'https://query1.finance.yahoo.com', geckoterminal: 'https://api.geckoterminal.com' } as const;
+const Origins = { backed: 'https://api.xstocks.fi', backpack: 'https://api.backpack.exchange', prestocks: 'https://prestocks.com', robinhood: 'https://api.robinhood.com', jupiter: 'https://api.jup.ag', nasdaq: 'https://www.nasdaqtrader.com', yahoo: 'https://query1.finance.yahoo.com', geckoterminal: 'https://api.geckoterminal.com' } as const;
 const PreStockOrigins = new Set(['https://prestocks.com', 'https://www.prestocks.com']);
 const run = limitConcurrency(4);
 // The issuer exposes one small cached price resource per xStock. Give these requests
@@ -12,26 +13,24 @@ const run = limitConcurrency(4);
 // globally paced below, so this is bounded in-flight concurrency rather than a burst.
 const runBacked = limitConcurrency(4);
 const runYahoo = limitConcurrency(4);
+const runRobinhood = limitConcurrency(2);
 const runJupiter = limitConcurrency(1);
 const runGeckoTerminal = limitConcurrency(1);
 const MAX_BODY = 8_000_000;
 
 /** Serialize request starts, including failed requests, to respect Jupiter's keyless 0.5 RPS. */
 export function minimumRequestSpacing(intervalMs: number, now = Date.now,
-  sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))) {
+  sleep = (ms: number, signal?: AbortSignal) => delay(ms, undefined, { signal })) {
   let previousStart: number | undefined;
-  let queue = Promise.resolve();
-  return async () => {
-    const turn = queue.then(async () => {
+  const runSlot = limitConcurrency(1);
+  return (signal?: AbortSignal) => runSlot(async () => {
       if (previousStart !== undefined) {
         const remaining = intervalMs - (now() - previousStart);
-        if (remaining > 0) await sleep(remaining);
+        if (remaining > 0) await sleep(remaining, signal);
       }
+      signal?.throwIfAborted();
       previousStart = now();
-    });
-    queue = turn.catch(() => {});
-    await turn;
-  };
+  }, signal);
 }
 const waitForJupiterSlot = minimumRequestSpacing(2_050);
 // The public issuer endpoint returns 429 when a cold catalog fans out. A single
@@ -41,11 +40,32 @@ const waitForYahooSlot = minimumRequestSpacing(250);
 // GeckoTerminal's public API permits 30 calls/minute. Keep a small margin and
 // serialize detail-only pool/history requests so multiple clients share the cap.
 const waitForGeckoTerminalSlot = minimumRequestSpacing(2_050);
+let geckoRetryAt = 0;
+const geckoRequests = { queued: 0, inFlight: 0, starts: 0, lastStartedAt: null as string | null,
+  lastStatus: null as number | null };
+export function geckoTerminalDiagnostics() {
+  const remaining = Math.max(0, geckoRetryAt - Date.now());
+  return { ...geckoRequests, minimumSpacingMs: 2_050, cooldownRemainingMs: remaining,
+    cooldownUntil: remaining > 0 ? new Date(geckoRetryAt).toISOString() : null };
+}
+export class PublicProviderError extends Error {
+  constructor(readonly status: number, readonly retryAfterMs: number | null = null) { super('Public provider unavailable'); }
+}
 
 const SolanaAddress = '[1-9A-HJ-NP-Za-km-z]{32,44}';
 const GeckoPoolsPath = new RegExp(`^/api/v2/networks/solana/tokens/${SolanaAddress}/pools$`);
 const GeckoOhlcvPath = new RegExp(`^/api/v2/networks/solana/pools/${SolanaAddress}/ohlcv/(minute|hour|day)$`);
+const RobinhoodToken = '0x[0-9a-fA-F]{40}';
+const RobinhoodPool = '0x(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})';
+const RobinhoodTokensPath = new RegExp(`^/api/v2/networks/robinhood/tokens/multi/(${RobinhoodToken}(?:,${RobinhoodToken}){0,19})$`);
+const RobinhoodTokenPoolsPath = new RegExp(`^/api/v2/networks/robinhood/tokens/${RobinhoodToken}/pools$`);
+const RobinhoodPoolsPath = new RegExp(`^/api/v2/networks/robinhood/pools/multi/(${RobinhoodPool}(?:,${RobinhoodPool}){0,19})$`);
+const RobinhoodPricesPath = new RegExp(`^/api/v2/simple/networks/robinhood/token_price/(${RobinhoodToken}(?:,${RobinhoodToken}){0,19})$`);
 function validGeckoTerminalRequest(path: string, query: Record<string, string>): boolean {
+  if (RobinhoodPricesPath.test(path)) return Object.keys(query).length === 1 && query.include_24hr_price_change === 'true';
+  if (RobinhoodTokensPath.test(path)) return Object.keys(query).length === 1 && query.include === 'top_pools';
+  if (RobinhoodTokenPoolsPath.test(path)) return Object.keys(query).length === 2 && query.include === 'base_token,quote_token' && query.page === '1';
+  if (RobinhoodPoolsPath.test(path)) return Object.keys(query).length === 2 && query.include === 'base_token,quote_token' && query.include_volume_breakdown === 'true';
   if (GeckoPoolsPath.test(path)) return Object.keys(query).length === 2 &&
     query.include === 'base_token,quote_token' && query.page === '1';
   const match = path.match(GeckoOhlcvPath);
@@ -73,6 +93,7 @@ export function createGetJson(options: GetJsonOptions = {}): GetJson {
   if (url.origin !== Origins[provider] || !path.startsWith('/')) throw new Error('Invalid upstream request');
   if (provider === 'nasdaq' && !['/dynamic/SymDir/nasdaqlisted.txt', '/dynamic/SymDir/otherlisted.txt'].includes(path)) throw new Error('Invalid classification request');
   if (provider === 'prestocks' && (path !== '/api/prestocks' || Object.keys(query).length > 0)) throw new Error('Invalid PreStocks request');
+  if (provider === 'robinhood' && (!['/rhj/assets', '/rhj/prices'].includes(path) || Object.keys(query).length > 0)) throw new Error('Invalid Robinhood request');
   if (provider === 'jupiter' && path !== '/tokens/v2/search') throw new Error('Invalid statistics request');
   if (provider === 'yahoo' && path !== '/v1/finance/search' && !/^\/v8\/finance\/chart\/[A-Za-z0-9.%^=_-]{1,80}$/.test(path)) throw new Error('Invalid underlying-reference request');
   if (provider === 'geckoterminal' && !validGeckoTerminalRequest(path, query)) throw new Error('Invalid GeckoTerminal request');
@@ -81,8 +102,10 @@ export function createGetJson(options: GetJsonOptions = {}): GetJson {
     if (provider === 'jupiter') await waitForJupiterSlot();
     if (provider === 'backed') await waitForBackedSlot();
     if (provider === 'yahoo') await waitForYahooSlot();
-    if (provider === 'geckoterminal') await waitForGeckoTerminalSlot();
+    if (provider === 'geckoterminal' && geckoRetryAt > Date.now()) await delay(geckoRetryAt - Date.now(), undefined, { signal });
+    if (provider === 'geckoterminal') await waitForGeckoTerminalSlot(signal);
     signal?.throwIfAborted();
+    if (provider === 'geckoterminal') { geckoRequests.starts++; geckoRequests.lastStartedAt = new Date().toISOString(); }
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(8_000)]) : AbortSignal.timeout(8_000);
     const key = provider === 'jupiter' ? jupiterApiKey() : undefined;
     if (key !== undefined && (key.length === 0 || key.length > 2_048 || key.trim() !== key || /[\u0000-\u001f\u007f]/.test(key))) {
@@ -92,6 +115,7 @@ export function createGetJson(options: GetJsonOptions = {}): GetJson {
     if (key !== undefined) headers['x-api-key'] = key;
     const requestOptions: RequestInit = { method: 'GET', redirect: provider === 'prestocks' ? 'manual' : 'error', signal: requestSignal, headers };
     let response = await fetch(url, requestOptions);
+    if (provider === 'geckoterminal') geckoRequests.lastStatus = response.status;
     // The public site may canonicalize between its bare and www hosts. Follow at
     // most that one exact same-path redirect; never accept an arbitrary Location.
     if (provider === 'prestocks' && response.status >= 300 && response.status < 400) {
@@ -103,7 +127,16 @@ export function createGetJson(options: GetJsonOptions = {}): GetJson {
       await response.body?.cancel();
       response = await fetch(canonical, { ...requestOptions, redirect: 'error' });
     }
-    if (!response.ok) throw new Error('Public provider unavailable');
+    if (!response.ok) {
+      const retryAfter = response.headers.get('retry-after');
+      const seconds = retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) : NaN;
+      const date = retryAfter ? Date.parse(retryAfter) - Date.now() : NaN;
+      const retryAfterMs = response.status === 429 ? Math.min(300_000, Math.max(provider === 'geckoterminal' ? 60_000 : 1_000,
+        Number.isFinite(seconds) ? seconds * 1_000 : Number.isFinite(date) && date > 0 ? date : 60_000)) : null;
+      if (provider === 'geckoterminal' && retryAfterMs !== null) geckoRetryAt = Math.max(geckoRetryAt, Date.now() + retryAfterMs);
+      await response.body?.cancel();
+      throw new PublicProviderError(response.status, retryAfterMs);
+    }
     const reader = response.body?.getReader();
     if (!reader) throw new Error('Missing provider response');
     const chunks: Uint8Array[] = [];
@@ -121,8 +154,17 @@ export function createGetJson(options: GetJsonOptions = {}): GetJson {
     return provider === 'nasdaq' ? text : parseProviderJson(text);
   };
   // Statistics have their own single request slot, so a rate-limit wait cannot hold up quote work.
-  return provider === 'jupiter' ? runJupiter(request) : provider === 'backed' ? runBacked(request) : provider === 'yahoo' ? runYahoo(request) :
-    provider === 'geckoterminal' ? runGeckoTerminal(request) : run(request);
+  if (provider === 'geckoterminal') {
+    let started = false;
+    geckoRequests.queued++;
+    try {
+      return await runGeckoTerminal(async () => {
+        started = true; geckoRequests.queued--; geckoRequests.inFlight++;
+        try { return await request(); } finally { geckoRequests.inFlight--; }
+      }, signal);
+    } finally { if (!started) geckoRequests.queued--; }
+  }
+  return provider === 'jupiter' ? runJupiter(request) : provider === 'backed' ? runBacked(request) : provider === 'yahoo' ? runYahoo(request) : provider === 'robinhood' ? runRobinhood(request) : run(request);
   };
 }
 

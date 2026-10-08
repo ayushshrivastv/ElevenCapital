@@ -153,6 +153,37 @@ test('incremental publications carry only freshness-normalized changed rows', ()
   feed.stop();
 });
 
+test('quiet publications retain the complete catalog for a fresh reconnect', () => {
+  let clock = start;
+  const feed = new RealtimeCatalog(async () => catalog(), () => clock);
+  const first = catalog();
+  feed.publish(first);
+  const events: MarketEvent[] = [];
+  const unsubscribe = feed.subscribe(event => events.push(event));
+  assert.equal(events.at(-1)?.event, 'snapshot');
+  unsubscribe();
+
+  clock += 1_000;
+  const next = structuredClone(first);
+  next.stocks[0]!.quote.price = '123';
+  next.stocks.push({ ...structuredClone(first.stocks[0]!), id: 'backpack:AAPL.US', providerAssetId: 'AAPL.US',
+    symbol: 'AAPL.US', name: 'Apple Inc.', underlying: { symbol: 'AAPL', isin: null, cusip: null } });
+  feed.publish(next, { changedIds: ['backpack:MSFT.US', 'backpack:AAPL.US'], removedIds: [],
+    membershipChanged: true, requestedAt: 1 });
+  assert.equal(events.length, 1, 'no disconnected client receives or retains a publication');
+
+  const reconnect: MarketEvent[] = [];
+  feed.subscribe(event => reconnect.push(event));
+  assert.equal(reconnect.length, 1);
+  const snapshot = reconnect[0];
+  assert.equal(snapshot?.event, 'snapshot');
+  if (snapshot?.event !== 'snapshot') throw new Error('Expected reconnect snapshot');
+  assert.equal(snapshot.data.stocks.length, 2);
+  assert.equal(snapshot.data.stocks[0]?.quote.price, '123');
+  assert.equal(snapshot.data.stocks[1]?.id, 'backpack:AAPL.US');
+  feed.stop();
+});
+
 test('periodic unchanged refresh derives an empty non-membership patch after the initial snapshot', async () => {
   let clock = start; let monotonic = 20;
   const feed = new RealtimeCatalog(async () => catalog(), () => clock, 10_000, 5_000, () => monotonic);

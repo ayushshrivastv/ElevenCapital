@@ -2,8 +2,8 @@ import { pathToFileURL } from 'node:url';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
-import { CatalogSchema, type Catalog } from './schema.js';
-const SourceReport = z.object({ provider:z.enum(['backed','backpack','prestocks']), sourceCount:z.number().int().nonnegative(), includedIds:z.array(z.string()),
+import { CatalogSchema, ProviderId, ProviderIds, type Catalog } from './schema.js';
+const SourceReport = z.object({ provider:ProviderId, sourceCount:z.number().int().nonnegative(), includedIds:z.array(z.string()),
   excluded:z.array(z.object({id:z.string(),reason:z.string()})), unresolved:z.array(z.object({id:z.string(),reason:z.string()})), appCount:z.number().int().nonnegative(), classificationAsOf:z.string().optional() });
 export function reconcileCatalog(catalog: Catalog, diagnostics: unknown) {
   const sources=z.object({sources:z.array(SourceReport)}).parse(diagnostics).sources;
@@ -18,8 +18,8 @@ export function reconcileCatalog(catalog: Catalog, diagnostics: unknown) {
     return {...source,displayedIds:displayed,missing,unexpected,duplicates,categorized,
       ok:missing.length===0&&unexpected.length===0&&duplicates.length===0&&categorized===source.sourceCount&&displayed.length===source.appCount};
   });
-  return {checkedAt:new Date().toISOString(),ok:reports.length===3&&new Set(reports.map(r=>r.provider)).size===3&&reports.every(r=>r.ok)&&duplicateAppIds.length===0,
-    classificationComplete:reports.length===3&&reports.every(r=>r.unresolved.length===0),appCount:catalog.stocks.length,duplicateAppIds,sources:reports};
+  return {checkedAt:new Date().toISOString(),ok:reports.length===ProviderIds.length&&new Set(reports.map(r=>r.provider)).size===ProviderIds.length&&reports.every(r=>r.ok)&&duplicateAppIds.length===0,
+    classificationComplete:reports.length===ProviderIds.length&&reports.every(r=>r.unresolved.length===0),appCount:catalog.stocks.length,duplicateAppIds,sources:reports};
 }
 async function json(path:string) {
   const response=await fetch('http://127.0.0.1:8787'+path,{signal:AbortSignal.timeout(15000)});

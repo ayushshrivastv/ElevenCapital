@@ -20,7 +20,10 @@
     "report:jupiter-featured": "node --import tsx scripts/jupiter-featured-coverage.mjs"
   },
   "dependencies": {
-    "@relay-protocol/settlement-sdk": "0.0.143",
+    "@meteora-ag/dynamic-bonding-curve-sdk": "1.5.13",
+    "@solana/spl-token": "0.4.14",
+    "@solana/web3.js": "1.98.4",
+    "bn.js": "5.2.5",
     "bs58": "6.0.0",
     "decimal.js": "10.6.0",
     "fastify": "5.12.5",
@@ -30,6 +33,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@types/bn.js": "5.2.0",
     "@types/node": "22.20.3",
     "@types/ws": "8.18.1",
     "tsx": "4.23.13",
