@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Context
 import android.util.Log
 import com.elevencapital.app.BuildConfig
-import com.elevencapital.app.wallet.EthereumPreparedTransfer
 import com.elevencapital.app.wallet.PreparedTransfer
 import com.elevencapital.app.wallet.SolanaPreparedTransfer
 import com.elevencapital.app.wallet.TransferPreparationException
@@ -17,12 +16,10 @@ import com.elevencapital.app.wallet.WalletNetworkId
 import com.elevencapital.app.wallet.WalletSubmission
 import com.elevencapital.app.wallet.WalletSubmissionException
 import com.elevencapital.app.wallet.isCanonicalSolanaSignature
-import com.elevencapital.app.purchase.EvmPurchaseAction
 import com.elevencapital.app.purchase.PurchaseAction
 import com.elevencapital.app.purchase.PurchaseActionSubmission
 import com.elevencapital.app.purchase.PurchaseException
 import com.elevencapital.app.purchase.PurchaseFailureCode
-import com.elevencapital.app.purchase.PurchaseNetwork
 import com.elevencapital.app.purchase.SolanaPurchaseAction
 import io.privy.auth.AuthState
 import io.privy.auth.LinkedAccount
@@ -32,8 +29,6 @@ import io.privy.logging.PrivyLogLevel
 import io.privy.network.PrivyApiException
 import io.privy.sdk.Privy
 import io.privy.sdk.PrivyConfig
-import io.privy.wallet.ethereum.EthereumChain
-import io.privy.wallet.ethereum.EthereumRpcRequest
 import io.privy.wallet.solana.SendOptions
 import io.privy.wallet.solana.SolanaCluster
 import kotlinx.coroutines.CancellationException
@@ -53,8 +48,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
-import java.util.Locale
 
 /** One application-lifetime session owner; Privy owns token persistence and wallet key management. */
 class PrivyAuthController(
@@ -76,6 +71,8 @@ class PrivyAuthController(
     private var loginJob: Job? = null
     private var sessionEpoch = 0L
     private var loggingOut = false
+    private data class LogoutCleanup(val login: Job?, val message: String?, val restoreBlockSaved: Boolean)
+    private var logoutCleanup: LogoutCleanup? = null
     private val transferMutex = Mutex()
     private val consumedTransferOperations = LinkedHashSet<String>()
     private val sdk: Privy? = if (!configured) null else try {
@@ -91,6 +88,45 @@ class PrivyAuthController(
         mutableState.value = ElevenAuthState(true, AuthPhase.SIGNED_OUT, error = "Wallet sign-in could not start. Check the app configuration.")
         null
     }
+
+    // The opt-in real token executor owns its own transaction checks and signing calls.
+    // These accessors expose session state only inside this module; the installable UI APK
+    // contains no token-launch or community-buy signer.
+    internal val realExecutionPrivy: Privy? get() = sdk
+    internal val realExecutionSigningMutex: Mutex get() = transferMutex
+    internal fun realExecutionSessionMatches(userId: String): Boolean =
+        !loggingOut && state.value.authenticated && state.value.userId == userId &&
+            sessionGate.matchesVerifiedUser(userId)
+
+    private val sessionRecovery = SessionRestoreRecovery(
+        scope = scope,
+        isCurrent = { sdk != null && !loggingOut && !sessionGate.isBlocked && !sessionGate.isSigningIn && restoringSession() },
+        verify = {
+            val privy = requireNotNull(sdk)
+            // In the pinned SDK this requests restoration of an undetermined session; reading
+            // getAuthState alone only waits for initialization and returns its current state.
+            privy.onNetworkRestored()
+            privy.getAuthState()
+        },
+        onObservation = ::accept,
+        onRetryAvailable = ::setSessionRetryAvailable,
+    )
+    private val logoutRecovery = SessionRestoreRecovery(
+        scope = scope,
+        isCurrent = { sdk != null && loggingOut && sessionGate.isBlocked && logoutCleanup != null },
+        verify = {
+            val cleanup = requireNotNull(logoutCleanup)
+            val privy = requireNotNull(sdk)
+            // A cancelled browser operation must finish before SDK logout can clear its credentials.
+            cleanup.login?.cancelAndJoin()
+            privy.getAuthState()
+            privy.logout()
+        },
+        onObservation = { finishLogout() },
+        onRetryAvailable = ::setSessionRetryAvailable,
+        attemptTimeoutMs = 12_000L,
+        automaticDelaysMs = listOf(0L),
+    )
 
     init {
         sdk?.let { privy ->
@@ -123,6 +159,7 @@ class PrivyAuthController(
             mutableState.value = state.value.copy(error = "Wallet sign-in is not configured yet.")
             return
         }
+        sessionRecovery.stop()
         val attempt = sessionGate.beginSignIn()
         // A browser/redirect round trip may outlive this process. Keep restoration permitted so
         // Android process death cannot erase credentials that Privy successfully persisted.
@@ -138,12 +175,12 @@ class PrivyAuthController(
         mutableState.value = ElevenAuthState(true, AuthPhase.SIGNING_IN)
         loginJob = scope.launch {
             try {
-                privy.getAuthState()
+                checkNotNull(withTimeoutOrNull(6_000L) { privy.getAuthState() })
                 val result = privy.oAuth.login(OAuthProvider.Google, "${BuildConfig.PRIVY_URL_SCHEME}://")
                 ensureActive()
                 val returnedUserId = result.getOrThrow().id
                 // Authentication is verified by the SDK, not inferred from the browser callback.
-                val verified = privy.getAuthState()
+                val verified = checkNotNull(withTimeoutOrNull(6_000L) { privy.getAuthState() })
                 ensureActive()
                 if (!sessionGate.isCurrentSignIn(attempt)) return@launch
                 check(verified is AuthState.Authenticated && verified.user.id == returnedUserId && returnedUserId.isNotBlank())
@@ -157,7 +194,11 @@ class PrivyAuthController(
                     // A transient network/verification error must never become a real logout.
                     // Reconcile the SDK once: a confirmed signed-out result may return to the
                     // login page, while any persisted/unverified state continues silently.
-                    val observed = runCatching { privy.getAuthState() }.getOrNull()
+                    val observed = try {
+                        withTimeoutOrNull(6_000L) { privy.getAuthState() }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) { null }
                     when (observed) {
                         is AuthState.Authenticated -> {
                             if (sessionGate.completeSignIn(attempt, observed.user.id)) {
@@ -180,7 +221,7 @@ class PrivyAuthController(
                             setSessionRestoreAllowed(true)
                             invalidateWalletWork()
                             mutableState.value = ElevenAuthState(true, AuthPhase.RESTORING)
-                            observed?.let(::accept)
+                            if (observed != null) accept(observed) else sessionRecovery.start()
                         }
                     }
                 }
@@ -190,6 +231,12 @@ class PrivyAuthController(
 
     fun logout() {
         clearSession()
+    }
+
+    /** A delayed deliberate recheck. It neither authenticates the user nor clears valid credentials. */
+    fun retrySessionRestore() {
+        if (!state.value.sessionRestoreRetryAvailable) return
+        if (sessionGate.isBlocked) logoutRecovery.retry() else sessionRecovery.retry()
     }
 
     /** Requests a current user access JWT from Privy for one backend call; it is never cached. */
@@ -258,69 +305,37 @@ class PrivyAuthController(
         }
 
         try {
-            val transactionId = when (action) {
-                is EvmPurchaseAction -> {
-                    val expectedAddress = ValidatedWalletAddress.wallet(
-                        WalletNetworkId.ETHEREUM_MAINNET, action.walletAddress)
-                    val wallet = user.embeddedEthereumWallets.singleOrNull { candidate ->
-                        runCatching {
-                            ValidatedWalletAddress.wallet(WalletNetworkId.ETHEREUM_MAINNET, candidate.address)
-                        }.getOrNull() == expectedAddress
-                    } ?: throw PurchaseException(PurchaseFailureCode.AUTHENTICATION_REQUIRED,
-                        "The reviewed wallet is no longer available. Check the purchase status before retrying.", false)
-                    val chain = when (action.network) {
-                        PurchaseNetwork.ETHEREUM -> EthereumChain.Mainnet
-                        PurchaseNetwork.BASE -> EthereumChain.Base
-                        PurchaseNetwork.ARBITRUM -> EthereumChain.Arbitrum
-                        PurchaseNetwork.SOLANA -> throw IllegalStateException()
-                    }
-                    try {
-                        wallet.provider.switchChain(chain)
-                    } catch (_: Exception) {
-                        throw PurchaseException(PurchaseFailureCode.WALLET_REJECTED,
-                            "The wallet could not switch to ${action.network.displayName}. Nothing was submitted.",
-                            retryable = true, providerInvoked = false)
-                    }
-                    val response = withContext(NonCancellable) {
-                        wallet.provider.request(EthereumRpcRequest.ethSendTransaction(
-                            action.transaction.rpcJson(action.network.chainId)))
-                    }.getOrElse { throw purchaseProviderFailure() }
-                    if (response.method != "eth_sendTransaction" || !ETHEREUM_TRANSACTION_HASH.matches(response.data)) {
-                        throw PurchaseException(PurchaseFailureCode.SUBMISSION_UNCERTAIN,
-                            "Privy returned an unexpected result. Eleven will check status and will not submit again.",
-                            false, providerInvoked = true)
-                    }
-                    response.data.lowercase(Locale.ROOT)
-                }
-                is SolanaPurchaseAction -> {
-                    val expectedAddress = ValidatedWalletAddress.wallet(
-                        WalletNetworkId.SOLANA_MAINNET, action.walletAddress)
-                    val wallet = user.embeddedSolanaWallets.singleOrNull { candidate ->
-                        runCatching {
-                            ValidatedWalletAddress.wallet(WalletNetworkId.SOLANA_MAINNET, candidate.address)
-                        }.getOrNull() == expectedAddress
-                    } ?: throw PurchaseException(PurchaseFailureCode.AUTHENTICATION_REQUIRED,
-                        "The reviewed wallet is no longer available. Check the purchase status before retrying.", false)
-                    val signature = withContext(NonCancellable) {
-                        wallet.provider.signAndSendTransaction(
-                            transaction = action.unsignedTransactionBytes(),
-                            cluster = SolanaCluster.MainNet,
-                            rpcUrl = null,
-                            sendOptions = SendOptions(
-                                skipPreflight = false,
-                                preflightCommitment = "confirmed",
-                                maxRetries = 3,
-                                minContextSlot = action.minContextSlot,
-                            ),
-                        )
-                    }.getOrElse { throw purchaseProviderFailure() }
-                    if (!isCanonicalSolanaSignature(signature)) {
-                        throw PurchaseException(PurchaseFailureCode.SUBMISSION_UNCERTAIN,
-                            "Privy returned an unexpected result. Eleven will check status and will not submit again.",
-                            false, providerInvoked = true)
-                    }
-                    signature
-                }
+            if (action !is SolanaPurchaseAction) throw PurchaseException(
+                PurchaseFailureCode.PROTOCOL_ERROR,
+                "The purchase service returned an unsupported wallet action. Nothing was sent.",
+                retryable = false,
+                providerInvoked = false,
+            )
+            val expectedAddress = ValidatedWalletAddress.wallet(
+                WalletNetworkId.SOLANA_MAINNET, action.walletAddress)
+            val wallet = user.embeddedSolanaWallets.singleOrNull { candidate ->
+                runCatching {
+                    ValidatedWalletAddress.wallet(WalletNetworkId.SOLANA_MAINNET, candidate.address)
+                }.getOrNull() == expectedAddress
+            } ?: throw PurchaseException(PurchaseFailureCode.AUTHENTICATION_REQUIRED,
+                "The reviewed wallet is no longer available. Check the purchase status before retrying.", false)
+            val transactionId = withContext(NonCancellable) {
+                wallet.provider.signAndSendTransaction(
+                    transaction = action.unsignedTransactionBytes(),
+                    cluster = SolanaCluster.MainNet,
+                    rpcUrl = null,
+                    sendOptions = SendOptions(
+                        skipPreflight = false,
+                        preflightCommitment = "confirmed",
+                        maxRetries = 3,
+                        minContextSlot = action.minContextSlot,
+                    ),
+                )
+            }.getOrElse { throw purchaseProviderFailure() }
+            if (!isCanonicalSolanaSignature(transactionId)) {
+                throw PurchaseException(PurchaseFailureCode.SUBMISSION_UNCERTAIN,
+                    "Privy returned an unexpected result. Eleven will check status and will not submit again.",
+                    false, providerInvoked = true)
             }
             PurchaseActionSubmission(action.id, transactionId)
         } catch (failure: PurchaseException) {
@@ -394,61 +409,34 @@ class PrivyAuthController(
         }
         try {
             prepared.requireUsable(Instant.now())
-            val transactionId = when (prepared) {
-                is EthereumPreparedTransfer -> {
-                    if (review.networkId != WalletNetworkId.ETHEREUM_MAINNET) throw IllegalStateException()
-                    val wallet = user.embeddedEthereumWallets.singleOrNull { candidate ->
-                        candidate.id == review.walletId &&
-                            runCatching {
-                                ValidatedWalletAddress.wallet(WalletNetworkId.ETHEREUM_MAINNET, candidate.address)
-                            }.getOrNull() == review.sender
-                    } ?: throw WalletSubmissionException(true,
-                        "The reviewed Ethereum wallet is no longer available. Nothing was sent.")
-                    wallet.provider.switchChain(EthereumChain.Mainnet)
-                    beginProviderSubmission()
-                    val response = withContext(NonCancellable) {
-                        wallet.provider.request(
-                            EthereumRpcRequest.ethSendTransaction(prepared.transaction.rpcJson()),
-                        )
-                    }.getOrElse { throw providerSubmissionFailure(it) }
-                    if (response.method != "eth_sendTransaction" || !ETHEREUM_TRANSACTION_HASH.matches(response.data)) {
-                        throw WalletSubmissionException(false,
-                            "Privy returned an unexpected transaction result. Check the wallet history before trying again.")
-                    }
-                    response.data.lowercase(Locale.ROOT)
-                }
-                is SolanaPreparedTransfer -> {
-                    if (review.networkId != WalletNetworkId.SOLANA_MAINNET) throw IllegalStateException()
-                    val wallet = user.embeddedSolanaWallets.singleOrNull { candidate ->
-                        candidate.id == review.walletId &&
-                            runCatching {
-                                ValidatedWalletAddress.wallet(WalletNetworkId.SOLANA_MAINNET, candidate.address)
-                            }.getOrNull() == review.sender
-                    } ?: throw WalletSubmissionException(true,
-                        "The reviewed Solana wallet is no longer available. Nothing was sent.")
-                    beginProviderSubmission()
-                    val signature = withContext(NonCancellable) {
-                        wallet.provider.signAndSendTransaction(
-                            transaction = prepared.unsignedTransactionBytes(),
-                            cluster = SolanaCluster.MainNet,
-                            rpcUrl = null,
-                            sendOptions = SendOptions(
-                                skipPreflight = false,
-                                preflightCommitment = "confirmed",
-                                maxRetries = 3,
-                                // TransferPreparationClient already bounds this value to a
-                                // positive signed Long. Use toLong() here because
-                                // BigInteger.longValueExact() is unavailable below API 31.
-                                minContextSlot = prepared.observedSlot.toLong(),
-                            ),
-                        )
-                    }.getOrElse { throw providerSubmissionFailure(it) }
-                    if (!isCanonicalSolanaSignature(signature)) {
-                        throw WalletSubmissionException(false,
-                            "Privy returned an unexpected transaction result. Check the wallet history before trying again.")
-                    }
-                    signature
-                }
+            if (prepared !is SolanaPreparedTransfer || review.networkId != WalletNetworkId.SOLANA_MAINNET) {
+                throw WalletSubmissionException(true, "The reviewed transfer is not a supported Solana transfer.")
+            }
+            val wallet = user.embeddedSolanaWallets.singleOrNull { candidate ->
+                candidate.id == review.walletId &&
+                    runCatching {
+                        ValidatedWalletAddress.wallet(WalletNetworkId.SOLANA_MAINNET, candidate.address)
+                    }.getOrNull() == review.sender
+            } ?: throw WalletSubmissionException(true,
+                "The reviewed Solana wallet is no longer available. Nothing was sent.")
+            beginProviderSubmission()
+            val transactionId = withContext(NonCancellable) {
+                wallet.provider.signAndSendTransaction(
+                    transaction = prepared.unsignedTransactionBytes(),
+                    cluster = SolanaCluster.MainNet,
+                    rpcUrl = null,
+                    sendOptions = SendOptions(
+                        skipPreflight = false,
+                        preflightCommitment = "confirmed",
+                        maxRetries = 3,
+                        // TransferPreparationClient bounds this value to a positive signed Long.
+                        minContextSlot = prepared.observedSlot.toLong(),
+                    ),
+                )
+            }.getOrElse { throw providerSubmissionFailure(it) }
+            if (!isCanonicalSolanaSignature(transactionId)) {
+                throw WalletSubmissionException(false,
+                    "Privy returned an unexpected transaction result. Check the wallet history before trying again.")
             }
             val submission = WalletSubmission(
                 review.operationId,
@@ -503,8 +491,9 @@ class PrivyAuthController(
     }
 
     private fun clearSession(completionMessage: String? = null) {
-        val privy = sdk ?: return
+        sdk ?: return
         if (loggingOut) return
+        sessionRecovery.stop()
         loggingOut = true
         sessionGate.block()
         val restoreBlockSaved = setSessionRestoreAllowed(false)
@@ -513,22 +502,26 @@ class PrivyAuthController(
         invalidateWalletWork()
         // Remove the former account's addresses immediately, including while logout is in flight.
         mutableState.value = ElevenAuthState(true, AuthPhase.RESTORING)
-        scope.launch {
-            try {
-                // Drain a cancelled OAuth operation before clearing SDK state or allowing another.
-                pendingLogin?.cancelAndJoin()
-                // SDK logout does not await startup restoration; join it so it cannot restore after logout.
-                privy.getAuthState()
-                privy.logout()
-                mutableState.value = ElevenAuthState(true, AuthPhase.SIGNED_OUT,
-                    error = if (restoreBlockSaved) completionMessage else "Sign-out could not be saved securely. Please try again.")
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                mutableState.value = ElevenAuthState(true, AuthPhase.SESSION_UNVERIFIED, error = "Sign-out could not finish. Try signing out again.")
-            } finally {
-                loggingOut = false
-            }
+        logoutCleanup = LogoutCleanup(pendingLogin, completionMessage, restoreBlockSaved)
+        logoutRecovery.start()
+    }
+
+    private fun finishLogout() {
+        val cleanup = logoutCleanup ?: return
+        if (!loggingOut || !sessionGate.isBlocked) return
+        logoutRecovery.stop()
+        logoutCleanup = null
+        loggingOut = false
+        mutableState.value = ElevenAuthState(true, AuthPhase.SIGNED_OUT,
+            error = if (cleanup.restoreBlockSaved) cleanup.message else "Sign-out could not be saved securely. Please try again.")
+    }
+
+    private fun restoringSession(): Boolean = state.value.phase == AuthPhase.RESTORING ||
+        state.value.phase == AuthPhase.SESSION_UNVERIFIED
+
+    private fun setSessionRetryAvailable(available: Boolean) {
+        if (!available || restoringSession()) {
+            mutableState.value = state.value.copy(sessionRestoreRetryAvailable = available)
         }
     }
 
@@ -545,9 +538,12 @@ class PrivyAuthController(
         when (auth) {
             AuthState.NotReady -> {
                 invalidateWalletWork()
-                mutableState.value = ElevenAuthState(true, AuthPhase.RESTORING)
+                mutableState.value = ElevenAuthState(true, AuthPhase.RESTORING,
+                    sessionRestoreRetryAvailable = state.value.sessionRestoreRetryAvailable)
+                sessionRecovery.start()
             }
             AuthState.Unauthenticated -> {
+                sessionRecovery.stop()
                 sessionGate.block()
                 setSessionRestoreAllowed(false)
                 invalidateWalletWork()
@@ -555,7 +551,9 @@ class PrivyAuthController(
             }
             is AuthState.AuthenticatedUnverified -> {
                 invalidateWalletWork()
-                mutableState.value = ElevenAuthState(true, AuthPhase.SESSION_UNVERIFIED, error = "Reconnecting your secure session…")
+                mutableState.value = ElevenAuthState(true, AuthPhase.SESSION_UNVERIFIED, error = "Reconnecting your secure session…",
+                    sessionRestoreRetryAvailable = state.value.sessionRestoreRetryAvailable)
+                sessionRecovery.start()
             }
             is AuthState.Authenticated -> {
                 val accountId = auth.user.id
@@ -563,6 +561,7 @@ class PrivyAuthController(
                     clearSession("Your session changed. Please sign in again.")
                     return
                 }
+                sessionRecovery.stop()
                 val sameAccount = state.value.userId == accountId
                 if (!sameAccount) invalidateWalletWork()
                 val wallets = auth.user.publicWallets()
@@ -574,7 +573,7 @@ class PrivyAuthController(
                         .firstOrNull()?.let { it.name?.takeIf(String::isNotBlank) ?: it.email },
                     wallets = wallets,
                     provisioning = sameAccount && walletJob?.isActive == true,
-                    error = if (sameAccount && !hasBothChains(wallets)) state.value.error else null,
+                    error = if (sameAccount && !hasSolanaWallet(wallets)) state.value.error else null,
                 )
                 if (!state.value.walletsReady) provision(accountId)
             }
@@ -637,7 +636,6 @@ class PrivyAuthController(
 }
 
 private const val MAX_CONSUMED_TRANSFER_OPERATIONS = 256
-private val ETHEREUM_TRANSACTION_HASH = Regex("0x[0-9a-fA-F]{64}")
 
 private fun providerSubmissionFailure(failure: Throwable): WalletSubmissionException {
     val apiFailure = generateSequence(failure) { it.cause }
@@ -660,21 +658,20 @@ private fun purchaseProviderFailure(): PurchaseException = PurchaseException(
     providerInvoked = true,
 )
 
-private fun hasBothChains(wallets: List<UserWallet>) = WalletChain.entries.all { chain -> wallets.any { it.chain == chain } }
+private fun hasSolanaWallet(wallets: List<UserWallet>) = wallets.any { it.chain == WalletChain.SOLANA }
 
 private fun PrivyUser.publicWallets(): List<UserWallet> =
-    embeddedSolanaWallets.map { UserWallet(WalletChain.SOLANA, it.address, it.id.orEmpty()) } +
-        embeddedEthereumWallets.map { UserWallet(WalletChain.ETHEREUM, it.address, it.id.orEmpty()) }
+    embeddedSolanaWallets.map { UserWallet(WalletChain.SOLANA, it.address, it.id.orEmpty()) }
 
-private class PrivyWalletAccount(private val user: PrivyUser) : WalletAccountSession {
+private class PrivyWalletAccount(
+    private val user: PrivyUser,
+) : WalletAccountSession {
     // SDK user properties reflect its current session; retain the expected identity for guards.
     override val id: String = user.id
     override val wallets: List<UserWallet> get() = user.publicWallets()
     override suspend fun refresh() { user.refresh().getOrThrow() }
     override suspend fun create(chain: WalletChain): UserWallet = when (chain) {
         WalletChain.SOLANA -> user.createSolanaWallet(allowAdditional = false).getOrThrow()
-            .let { UserWallet(chain, it.address, it.id.orEmpty()) }
-        WalletChain.ETHEREUM -> user.createEthereumWallet(allowAdditional = false).getOrThrow()
             .let { UserWallet(chain, it.address, it.id.orEmpty()) }
     }
 }

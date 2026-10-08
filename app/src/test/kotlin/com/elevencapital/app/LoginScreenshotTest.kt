@@ -80,6 +80,23 @@ class LoginScreenshotTest {
     }
 
     @Test
+    fun cancelledDeviceUnlockRetry() = capture("cancelled_device_unlock_retry") {
+        DeviceUnlockScreen(
+            state = DeviceUnlockState(
+                DeviceUnlockPhase.LOCKED, userId = "user",
+                message = "Eleven remains locked. Try unlocking again.", retryAvailable = true,
+            ),
+            onUnlock = {},
+            onOpenSecuritySettings = {},
+        )
+    }
+
+    @Test
+    fun stalledSessionRestoreRetry() = capture("stalled_session_restore_retry") {
+        SecureSessionScreen(retryAvailable = true, onRetry = {})
+    }
+
+    @Test
     fun deviceLockSetupRequired() = capture("device_lock_setup_required") {
         DeviceUnlockScreen(
             state = DeviceUnlockState(

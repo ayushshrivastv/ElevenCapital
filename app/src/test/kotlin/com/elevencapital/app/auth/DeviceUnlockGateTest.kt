@@ -18,7 +18,10 @@ class DeviceUnlockGateTest {
         gate.onSessionChanged("returning-user")
         assertEquals(DeviceUnlockPhase.LOCKED, gate.state.value.phase)
         assertFalse(gate.state.value.contentAllowed)
+        assertFalse(gate.state.value.retryAvailable)
         val attempt = requireNotNull(gate.beginPrompt())
+        assertFalse(gate.state.value.retryAvailable)
+        assertEquals(attempt, gate.activeAttempt())
         assertEquals(null, gate.beginPrompt())
         gate.onAuthenticationSucceeded(attempt)
         assertEquals(DeviceUnlockPhase.UNLOCKED, gate.state.value.phase)
@@ -30,8 +33,11 @@ class DeviceUnlockGateTest {
         gate.onSessionChanged("user")
         val attempt = requireNotNull(gate.beginPrompt())
         gate.onAuthenticationCancelled(attempt)
+        assertTrue(gate.state.value.retryAvailable)
+        assertFalse(gate.state.value.contentAllowed)
         assertEquals(null, gate.beginPrompt())
         assertTrue(gate.beginPrompt(userRequested = true) != null)
+        assertFalse(gate.state.value.retryAvailable)
     }
 
     @Test fun `cancelled prompt is offered again after leaving and reopening the app`() {
@@ -91,5 +97,67 @@ class DeviceUnlockGateTest {
         gate.onAuthenticationSucceeded(oldAttempt)
         assertEquals(DeviceUnlockPhase.LOCKED, gate.state.value.phase)
         assertEquals("new-user", gate.state.value.userId)
+    }
+
+    @Test fun `a missing prompt can be retried without an old callback affecting the retry`() {
+        val gate = DeviceUnlockGate()
+        gate.onSessionChanged("user")
+        val missingAttempt = requireNotNull(gate.beginPrompt())
+        gate.onAuthenticationCancelled(missingAttempt, "Phone security did not open. Try unlocking again.")
+        assertTrue(gate.state.value.retryAvailable)
+        assertEquals(null, gate.beginPrompt())
+
+        val retry = requireNotNull(gate.beginPrompt(userRequested = true))
+        gate.onAuthenticationSucceeded(missingAttempt)
+        gate.onAuthenticationCancelled(missingAttempt)
+        assertEquals(retry, gate.activeAttempt())
+        assertFalse(gate.state.value.contentAllowed)
+        gate.onAuthenticationSucceeded(retry)
+        assertTrue(gate.state.value.contentAllowed)
+        assertFalse(gate.state.value.retryAvailable)
+    }
+
+    @Test fun `restored old process callback cannot unlock a new attempt for the same user`() {
+        val oldGate = DeviceUnlockGate().apply { onSessionChanged("user") }
+        val oldAttempt = requireNotNull(oldGate.beginPrompt())
+        val newGate = DeviceUnlockGate().apply { onSessionChanged("user") }
+        val newAttempt = requireNotNull(newGate.beginPrompt())
+        assertEquals(oldAttempt.id, newAttempt.id)
+        assertTrue(oldAttempt.epoch != newAttempt.epoch)
+
+        newGate.onAuthenticationSucceeded(oldAttempt)
+        newGate.onAuthenticationCancelled(oldAttempt)
+        assertEquals(newAttempt, newGate.activeAttempt())
+        assertFalse(newGate.state.value.contentAllowed)
+    }
+
+    @Test fun `unverified session retires its prompt and requires fresh verification before retry`() {
+        val gate = DeviceUnlockGate()
+        gate.onSessionChanged("user")
+        val oldAttempt = requireNotNull(gate.beginPrompt())
+        gate.onSessionChanged(null)
+        assertEquals(null, gate.beginPrompt(userRequested = true))
+
+        gate.onSessionChanged("user")
+        val verifiedAttempt = requireNotNull(gate.beginPrompt())
+        gate.onAuthenticationSucceeded(oldAttempt)
+        assertEquals(verifiedAttempt, gate.activeAttempt())
+        assertFalse(gate.state.value.contentAllowed)
+    }
+
+    @Test fun `setting up phone credentials does not itself unlock or preserve old prompt results`() {
+        val gate = DeviceUnlockGate()
+        gate.onSessionChanged("user")
+        val oldAttempt = requireNotNull(gate.beginPrompt())
+        gate.onDeviceCredentialUnavailable()
+        assertEquals(null, gate.beginPrompt(userRequested = true))
+        gate.onAuthenticationSucceeded(oldAttempt)
+        assertFalse(gate.state.value.contentAllowed)
+
+        gate.onDeviceCredentialAvailable()
+        val newAttempt = requireNotNull(gate.beginPrompt())
+        gate.onAuthenticationSucceeded(oldAttempt)
+        assertEquals(newAttempt, gate.activeAttempt())
+        assertFalse(gate.state.value.contentAllowed)
     }
 }

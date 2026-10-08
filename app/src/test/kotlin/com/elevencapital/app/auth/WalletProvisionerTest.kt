@@ -32,54 +32,54 @@ class WalletProvisionerTest {
         }
     }
 
-    @Test fun `new account gets one wallet per chain`() = runBlocking {
+    @Test fun `new account gets one Solana wallet`() = runBlocking {
         val account = Account()
         var published = emptyList<UserWallet>()
         provisionWallets(account, { it == account.id }) { published = it }
         assertEquals(WalletChain.entries.toSet(), account.created.toSet())
         assertEquals(1, account.refreshes)
-        assertEquals(2, published.size)
+        assertEquals(1, published.size)
     }
 
-    @Test fun `returning account reuses both wallets`() = runBlocking {
+    @Test fun `returning account reuses its Solana wallet`() = runBlocking {
         val account = Account().apply {
             wallets = WalletChain.entries.map { UserWallet(it, "existing-$it") }
         }
         provisionWallets(account, { true }) {}
         assertTrue(account.created.isEmpty())
-        assertEquals(2, account.wallets.size)
+        assertEquals(1, account.wallets.size)
         assertEquals(1, account.refreshes)
     }
 
-    @Test fun `partially provisioned account creates only missing chain`() = runBlocking {
+    @Test fun `already provisioned account does not create an additional wallet`() = runBlocking {
         val account = Account().apply {
             wallets = listOf(UserWallet(WalletChain.SOLANA, "existing-solana"))
             refreshLimit = 1
         }
         provisionWallets(account, { true }) {}
-        assertEquals(listOf(WalletChain.ETHEREUM), account.created)
+        assertTrue(account.created.isEmpty())
         assertEquals("existing-solana", account.wallets.first().address)
         assertEquals(1, account.refreshes)
     }
 
-    @Test fun `SDK refreshed wallet list is reread before creating next chain`() = runBlocking {
+    @Test fun `SDK refreshed wallet list is reread before creating Solana wallet`() = runBlocking {
         val account = Account().apply {
-            afterCreate = { wallets += UserWallet(WalletChain.ETHEREUM, "server-linked-ethereum") }
+            afterRefresh = { wallets = listOf(UserWallet(WalletChain.SOLANA, "server-linked-solana")) }
         }
         var published = emptyList<UserWallet>()
         provisionWallets(account, { true }) { published = it }
-        assertEquals(listOf(WalletChain.SOLANA), account.created)
+        assertTrue(account.created.isEmpty())
         assertEquals(1, account.refreshes)
-        assertEquals(2, published.size)
+        assertEquals(1, published.size)
     }
 
     @Test fun `existing multiple wallets never triggers additional wallets`() = runBlocking {
         val account = Account().apply {
-            wallets = listOf(UserWallet(WalletChain.SOLANA, "s1"), UserWallet(WalletChain.SOLANA, "s2"), UserWallet(WalletChain.ETHEREUM, "e1"))
+            wallets = listOf(UserWallet(WalletChain.SOLANA, "s1"), UserWallet(WalletChain.SOLANA, "s2"))
         }
         provisionWallets(account, { true }) {}
         assertTrue(account.created.isEmpty())
-        assertEquals(3, account.wallets.size)
+        assertEquals(2, account.wallets.size)
     }
 
     @Test fun `failed refresh cannot create a duplicate using stale local absence`() = runBlocking {
@@ -92,8 +92,8 @@ class WalletProvisionerTest {
         val account = Account().apply { loseResponse = true }
         assertTrue(runCatching { provisionWallets(account, { true }) {} }.isFailure)
         provisionWallets(account, { true }) {}
-        assertEquals(listOf(WalletChain.SOLANA, WalletChain.ETHEREUM), account.created)
-        assertEquals(2, account.wallets.size)
+        assertEquals(listOf(WalletChain.SOLANA), account.created)
+        assertEquals(1, account.wallets.size)
         assertEquals(2, account.refreshes)
     }
 
@@ -119,9 +119,9 @@ class WalletProvisionerTest {
         assertTrue(runCatching { provisionWallets(account, { true }) {} }.isFailure)
         assertTrue(account.wallets.isEmpty())
         provisionWallets(account, { true }) {}
-        assertEquals(listOf(WalletChain.SOLANA, WalletChain.ETHEREUM), created)
+        assertEquals(listOf(WalletChain.SOLANA), created)
         assertEquals(2, refreshes)
-        assertEquals(2, account.wallets.size)
+        assertEquals(1, account.wallets.size)
     }
 
     @Test fun `account change during initial refresh prevents wallet publication and creation`() = runBlocking {
@@ -160,7 +160,7 @@ class WalletProvisionerTest {
         assertFalse(state.walletsReady)
     }
 
-    @Test fun `ready requires verified account and both chains`() {
+    @Test fun `ready requires verified account and a Solana wallet`() {
         val base = ElevenAuthState(true, AuthPhase.AUTHENTICATED, userId = "account-a")
         assertFalse(base.walletsReady)
         assertTrue(base.copy(wallets = WalletChain.entries.map { UserWallet(it, "public-$it") }).walletsReady)

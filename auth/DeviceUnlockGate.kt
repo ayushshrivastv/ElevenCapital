@@ -3,6 +3,7 @@ package com.elevencapital.app.auth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.UUID
 
 /**
  * Process-local gate for personal app content.
@@ -18,6 +19,7 @@ class DeviceUnlockGate {
     private var authenticatedUserId: String? = null
     private var automaticPromptAllowed = true
     private var nextAttemptId = 0L
+    private val processEpoch = UUID.randomUUID().toString()
 
     fun onSessionChanged(userId: String?) {
         val verifiedUserId = userId?.takeIf(String::isNotBlank)
@@ -36,18 +38,19 @@ class DeviceUnlockGate {
         val userId = authenticatedUserId ?: return null
         if (userRequested) automaticPromptAllowed = true
         if (!automaticPromptAllowed || mutableState.value.phase != DeviceUnlockPhase.LOCKED) return null
-        val attempt = DeviceUnlockAttempt(userId, ++nextAttemptId)
+        val attempt = DeviceUnlockAttempt(userId, ++nextAttemptId, processEpoch)
         mutableState.value = DeviceUnlockState(
             DeviceUnlockPhase.PROMPTING,
             userId = userId,
             attemptId = attempt.id,
+            attemptEpoch = attempt.epoch,
         )
         return attempt
     }
 
     fun activeAttempt(): DeviceUnlockAttempt? = mutableState.value.let { state ->
-        if (state.phase == DeviceUnlockPhase.PROMPTING && state.userId != null && state.attemptId != null) {
-            DeviceUnlockAttempt(state.userId, state.attemptId)
+        if (state.phase == DeviceUnlockPhase.PROMPTING && state.userId != null && state.attemptId != null && state.attemptEpoch != null) {
+            DeviceUnlockAttempt(state.userId, state.attemptId, state.attemptEpoch)
         } else null
     }
 
@@ -59,13 +62,14 @@ class DeviceUnlockGate {
 
     fun onAuthenticationCancelled(
         attempt: DeviceUnlockAttempt,
-        message: String = "Eleven Capital remains locked.",
+        message: String = "Eleven remains locked. Try unlocking again.",
     ) {
         if (!matchesActiveAttempt(attempt)) return
         // Cancellation returns to a safe branded screen. Re-opening the system prompt requires
-        // a deliberate tap on the logo, which avoids an inescapable prompt loop.
+        // a deliberate retry, which avoids an inescapable prompt loop.
         automaticPromptAllowed = false
-        mutableState.value = DeviceUnlockState(DeviceUnlockPhase.LOCKED, attempt.userId, message)
+        mutableState.value = DeviceUnlockState(DeviceUnlockPhase.LOCKED, attempt.userId, message,
+            retryAvailable = true)
     }
 
     fun onDeviceCredentialUnavailable() {
@@ -104,6 +108,7 @@ class DeviceUnlockGate {
         authenticatedUserId == attempt.userId && mutableState.value.let { state ->
             state.phase == DeviceUnlockPhase.PROMPTING && state.userId == attempt.userId &&
                 state.attemptId == attempt.id
+                && state.attemptEpoch == attempt.epoch
         }
 }
 
@@ -114,8 +119,10 @@ data class DeviceUnlockState(
     val userId: String? = null,
     val message: String? = null,
     internal val attemptId: Long? = null,
+    val retryAvailable: Boolean = false,
+    internal val attemptEpoch: String? = null,
 ) {
     val contentAllowed: Boolean get() = phase == DeviceUnlockPhase.NOT_REQUIRED || phase == DeviceUnlockPhase.UNLOCKED
 }
 
-data class DeviceUnlockAttempt(val userId: String, val id: Long)
+data class DeviceUnlockAttempt(val userId: String, val id: Long, val epoch: String = "")
