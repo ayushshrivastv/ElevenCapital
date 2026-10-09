@@ -39,6 +39,7 @@ import com.elevencapital.app.screens.PreviewWalletPurchase
 import com.elevencapital.app.screens.PreviewWalletState
 import com.elevencapital.app.screens.previewStockTrade
 import com.elevencapital.app.screens.previewStockTradeState
+import com.elevencapital.app.screens.previewStockPurchase
 import com.elevencapital.app.screens.StockBuySuccessNotice
 import com.elevencapital.app.screens.StockDetailScreen
 import com.elevencapital.app.screens.TradeScreen
@@ -112,10 +113,19 @@ class TransactionPagePreviewTest {
     @Test fun nikePreviewBuyEntry() = capture("nike_preview_buy_entry") {
         val nike = Stock(StockId("backpack:NKE.US"), "NKE.US", "NIKE, Inc.",
             StockQuote(BigDecimal("35.73"), "USD"))
-        TradeScreen(nike, paymentBalance = BigDecimal("4.80"), onChooseStock = {},
-            initialAmountUsd = "0.02",
-            purchaseState = previewStockTradeState(nike, BigDecimal("0.04151"), BigDecimal("4.80")),
-            preview = previewStockTrade(nike, BigDecimal("0.04151"), processing = false))
+        TradeScreen(nike, paymentBalance = BigDecimal("82.00"), onChooseStock = {},
+            initialAmountUsd = "0",
+            purchaseState = previewStockTradeState(nike, BigDecimal("0.4"), BigDecimal("82.00")),
+            preview = previewStockTrade(nike, BigDecimal("0.4"), BigDecimal("82.00"), processing = false))
+    }
+
+    @Test fun spcxxPreviewBuyEntry() = capture("spcxx_preview_buy_entry") {
+        val spcxx = Stock(StockId("backed:eba060bd-f7b3-49e3-8ef1-99869351b434"),
+            "SPCXx", "SpaceX xStock", StockQuote(BigDecimal("147.00"), "USD"))
+        TradeScreen(spcxx, paymentBalance = BigDecimal("82.00"), onChooseStock = {},
+            initialAmountUsd = "0",
+            purchaseState = previewStockTradeState(spcxx, BigDecimal("0.4"), BigDecimal("82.00")),
+            preview = previewStockTrade(spcxx, BigDecimal("0.4"), BigDecimal("82.00"), processing = false))
     }
 
     @Test fun portfolioWithPreviewSolAndStocks() = capture("portfolio_preview_sol_and_stocks") {
@@ -123,14 +133,20 @@ class TransactionPagePreviewTest {
             "SPCXx", "SpaceX xStock", StockQuote(BigDecimal("147.00"), "USD"))
         val nike = Stock(StockId("backpack:NKE.US"), "NKE.US", "NIKE, Inc.",
             StockQuote(BigDecimal("35.73"), "USD"))
+        val spcxxPurchase = requireNotNull(previewStockPurchase(spcxx, BigDecimal("0.01")))
+        val nikePurchase = requireNotNull(previewStockPurchase(nike, BigDecimal("0.02")))
         AccountScreen(
-            balance = BigDecimal("6.044"), tokenHoldings = emptyList(), holdings = emptyList(),
-            onStock = {}, previewSolBalance = BigDecimal("0.04125056"),
-            previewSolValueUsd = BigDecimal("4.77"),
+            balance = BigDecimal("82.00"), tokenHoldings = emptyList(), holdings = emptyList(),
+            onStock = {}, previewSolBalance = BigDecimal("0.4"),
+            previewSolValueUsd = BigDecimal("82.00"),
+            previewUsdcBalance = BigDecimal.ZERO,
             previewHoldings = listOf(
-                PreviewStockHolding(spcxx, BigDecimal("0.00077351"), BigDecimal("0.114")),
-                PreviewStockHolding(nike, BigDecimal("0.032505"), BigDecimal("1.16")),
+                PreviewStockHolding(spcxx, spcxxPurchase.receiveTokens,
+                    spcxxPurchase.receiveValueUsd),
+                PreviewStockHolding(nike, nikePurchase.receiveTokens,
+                    nikePurchase.receiveValueUsd),
             ),
+            previewSpcxxHolding = PreviewStockHolding(spcxx, BigDecimal("0.01"), BigDecimal("1.47")),
         )
     }
 
@@ -152,8 +168,8 @@ class TransactionPagePreviewTest {
             StockQuote(BigDecimal("10"), "USD"),
             logo = StockLogoReference("reference/anthropic/standalone"))
         val solanaAddress = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
-        val payment = PurchasePaymentAsset("ARBITRUM:USDC", "USDC", "USD Coin",
-            PurchaseNetwork.ARBITRUM, "0x" + "b".repeat(40), 6,
+        val payment = PurchasePaymentAsset("SOLANA:USDC", "USDC", "USD Coin",
+            PurchaseNetwork.SOLANA, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 6,
             BigInteger("1000000"), BigDecimal.ONE, BigDecimal.ONE, true)
         val destination = PurchaseDestination("prestocks:Anthropic:solana", PurchaseNetwork.SOLANA,
             solanaAddress, "ANTHROPIC", 6, true)
@@ -193,10 +209,10 @@ class TransactionPagePreviewTest {
     private fun sampleTransfers(): List<WalletTransaction> {
         val now = Instant.now()
         return listOf(
-            WalletTransaction("in-arb", WalletActivityChain.ARBITRUM, "0x" + "1".repeat(64),
-                now.minusSeconds(8 * 60), WalletTransactionDirection.RECEIVE, "ETH",
-                BigDecimal("0.0005"), BigDecimal("2.12"), WalletUsdBasis.CURRENT_SPOT,
-                "0x" + "a".repeat(40)),
+            WalletTransaction("in-sol", WalletActivityChain.SOLANA, "1".repeat(88),
+                now.minusSeconds(8 * 60), WalletTransactionDirection.RECEIVE, "USDC",
+                BigDecimal("2.12"), BigDecimal("2.12"), WalletUsdBasis.CURRENT_SPOT,
+                "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"),
             WalletTransaction("out-sol", WalletActivityChain.SOLANA, "2".repeat(88),
                 now.minusSeconds(4 * 3600), WalletTransactionDirection.SEND, "SOL",
                 BigDecimal("0.01"), BigDecimal("1.86"), WalletUsdBasis.CURRENT_SPOT,
@@ -208,7 +224,7 @@ class TransactionPagePreviewTest {
         val now = Instant.now()
         return listOf(
             CompletedPurchaseTransaction("buy-spcx", "4".repeat(88), emptyList(), now.minusSeconds(90 * 60),
-                "SETTLEMENT", CompletedPurchaseSide.BUY, "stock:spcx", "ARBITRUM:USDC",
+                "SETTLEMENT", CompletedPurchaseSide.BUY, "stock:spcx", "SOLANA:USDC",
                 BigDecimal("1.00"), BigDecimal("0.05"), BigDecimal("1.00"),
                 PurchaseUsdBasis.STABLECOIN_EXACT),
             CompletedPurchaseTransaction("sell-anthropic", "5".repeat(88), emptyList(), now.minusSeconds(6 * 3600),

@@ -16,11 +16,9 @@ fun filterHomeWalletTransactions(
     if (verifiedUserId.isNullOrBlank()) return emptyList()
     val connected = wallets.mapNotNull { wallet ->
         if (wallet.walletId.isBlank()) return@mapNotNull null
-        val network = when (wallet.chain) {
-            WalletChain.ETHEREUM -> WalletNetworkId.ETHEREUM_MAINNET
-            WalletChain.SOLANA -> WalletNetworkId.SOLANA_MAINNET
-        }
-        runCatching { wallet.walletId to ValidatedWalletAddress.wallet(network, wallet.address) }.getOrNull()
+        runCatching {
+            wallet.walletId to ValidatedWalletAddress.wallet(WalletNetworkId.SOLANA_MAINNET, wallet.address)
+        }.getOrNull()
     }.toSet()
     return records.asSequence()
         .filter { record ->

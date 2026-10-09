@@ -3,6 +3,7 @@ package com.elevencapital.app.screens
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,8 +36,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
@@ -68,8 +73,19 @@ import java.util.Locale
 // The neutral palette follows the supplied wallet transaction reference.
 private val TransactionForeground = Color(0xFFF6F6EC)
 private val TransactionSecondary = Color(0xFFAAAAA2)
-private val TransactionIconBackground = Color(0xFF393A36)
+private val TransactionIconBackground = Color.White.copy(alpha = .15f)
+private val TransactionIconEdge = Color.White.copy(alpha = .10f)
 private val TransactionRefreshForeground = TransactionSecondary
+
+/** Main/prediction wallet movement, with a transaction hash only for confirmed chain transfers. */
+data class PredictionMainTransferItem(
+    val id: String,
+    val occurredAtMillis: Long,
+    val amountUsd: BigDecimal,
+    val incomingToMain: Boolean,
+    val transactionHash: String?,
+    val localUsdc: Boolean = false,
+)
 
 /** Confirmed public wallet activity and completed, authenticated orders for this Privy user. */
 @Composable
@@ -88,10 +104,13 @@ fun HomeWalletTransactions(
     onPreviewSpcxxTransaction: () -> Unit = {},
     previewWalletState: PreviewWalletState = PreviewWalletState(),
     onRefreshTransactions: () -> Unit = {},
-    onPreviewPurchaseTransaction: ((PreviewWalletPurchase) -> Unit)? = null,
+    onClearLocalUiFlow: () -> Unit = {},
+    predictionTransfers: List<PredictionMainTransferItem> = emptyList(),
+    communityActivity: List<CommunityUiActivity> = emptyList(),
+    onPredictionBalance: () -> Unit = {},
 ) {
     val visible = homeActivityItems(records, walletTransactions, purchaseTransactions,
-        previewSpcxxPosition, previewWalletState)
+        previewSpcxxPosition, previewWalletState, predictionTransfers, communityActivity)
     var refreshTaps by remember { mutableIntStateOf(0) }
     val refreshRotation by animateFloatAsState(
         targetValue = refreshTaps * 360f,
@@ -127,12 +146,20 @@ fun HomeWalletTransactions(
         }
         when {
             visible.isNotEmpty() -> visible.take(5).forEach { item ->
-                item.journal?.let { HomeWalletTransactionRow(it, unitPricesUsd, onHistory) }
+                item.predictionTransfer?.let {
+                    HomePredictionTransferRow(it, onPredictionBalance, onClearLocalUiFlow)
+                }
+                    ?: item.communityActivity?.let { HomeCommunityActivityRow(it, onHistory, onClearLocalUiFlow) }
+                    ?: item.journal?.let { HomeWalletTransactionRow(it, unitPricesUsd, onHistory) }
                     ?: item.chain?.let { HomeWalletChainRow(it, onHistory) }
                     ?: item.purchase?.let { HomePurchaseRow(it, stockSymbols, onHistory) }
-                    ?: item.previewFundingAt?.let { HomePreviewFundingRow(it) }
-                    ?: item.previewPurchase?.let { HomePreviewPurchaseRow(it, onPreviewPurchaseTransaction) }
-                    ?: item.previewSpcxx?.let { HomePreviewSpcxxRow(it, onPreviewSpcxxTransaction) }
+                    ?: item.previewFundingAt?.let {
+                        HomePreviewFundingRow(it, item.previewFundingSymbol.orEmpty(), onClearLocalUiFlow)
+                    }
+                    ?: item.previewPurchase?.let { HomePreviewPurchaseRow(it, onClearLocalUiFlow) }
+                    ?: item.previewSpcxx?.let {
+                        HomePreviewSpcxxRow(it, onPreviewSpcxxTransaction, onClearLocalUiFlow)
+                    }
             }
             !storageHealthy -> TransactionEmptyRow(
                 title = "History unavailable",
@@ -189,7 +216,10 @@ internal data class HomeTransactionItem(
     val purchase: CompletedPurchaseTransaction? = null,
     val previewSpcxx: PreviewSpcxxPosition? = null,
     val previewFundingAt: Long? = null,
+    val previewFundingSymbol: String? = null,
     val previewPurchase: PreviewWalletPurchase? = null,
+    val predictionTransfer: PredictionMainTransferItem? = null,
+    val communityActivity: CommunityUiActivity? = null,
 )
 
 /** A completed stock route can emit several chain transfers; show the order once. */
@@ -199,6 +229,8 @@ internal fun homeActivityItems(
     purchases: List<CompletedPurchaseTransaction>,
     previewSpcxxPosition: PreviewSpcxxPosition? = null,
     previewWalletState: PreviewWalletState = PreviewWalletState(),
+    predictionTransfers: List<PredictionMainTransferItem> = emptyList(),
+    communityActivity: List<CommunityUiActivity> = emptyList(),
 ): List<HomeTransactionItem> {
     val purchaseIds = purchases.flatMap { it.relatedTransactionIds + it.transactionId }
         .map(String::lowercase).toSet()
@@ -208,36 +240,85 @@ internal fun homeActivityItems(
         record.transactionId?.lowercase()?.let { it in purchaseIds || it in chainIds } ?: false
     }
     val previewActivity = previewSpcxxPosition?.takeIf {
-        BuildConfig.DEBUG && it.purchasedAtEpochMillis > 0L &&
-            previewWalletState.purchases.none { purchase -> purchase.stockId == SPCXX_PREVIEW_STOCK_ID }
+        BuildConfig.DEBUG && it.purchasedAtEpochMillis > 0L
     }?.let { listOf(HomeTransactionItem(it.purchasedAtEpochMillis, previewSpcxx = it)) }.orEmpty()
     val previewFunding = previewWalletState.fundedAtEpochMillis?.takeIf { BuildConfig.DEBUG && it > 0L }
-        ?.let { listOf(HomeTransactionItem(it, previewFundingAt = it)) }.orEmpty()
+        ?.let { fundedAt -> listOf(
+            HomeTransactionItem(fundedAt, previewFundingAt = fundedAt, previewFundingSymbol = "SOL"),
+        ) }.orEmpty()
     val previewPurchases = previewWalletState.purchases.takeIf { BuildConfig.DEBUG }.orEmpty()
         .map { HomeTransactionItem(it.purchasedAtEpochMillis, previewPurchase = it) }
     return (visibleJournal.map { HomeTransactionItem(it.review.createdAtEpochMillis, journal = it) } +
         visibleChain.map { HomeTransactionItem(it.timestamp.toEpochMilli(), chain = it) } +
         purchases.map { HomeTransactionItem(it.timestamp.toEpochMilli(), purchase = it) } +
-        previewActivity + previewFunding + previewPurchases)
+        previewActivity + previewFunding + previewPurchases +
+        communityActivity.takeIf { BuildConfig.DEBUG }.orEmpty()
+            .map { HomeTransactionItem(it.occurredAtMillis, communityActivity = it) } +
+        predictionTransfers.map { HomeTransactionItem(it.occurredAtMillis, predictionTransfer = it) })
         .sortedByDescending(HomeTransactionItem::timeMillis)
 }
 
 @Composable
-private fun HomePreviewFundingRow(receivedAt: Long) {
+private fun HomeCommunityActivityRow(
+    item: CommunityUiActivity,
+    onHistory: () -> Unit,
+    onClearLocalUiFlow: () -> Unit,
+) {
+    val action = when (item.kind) {
+        CommunityUiActivityKind.MINT -> "Minted"
+        CommunityUiActivityKind.BUY -> "Buy"
+        CommunityUiActivityKind.SELL -> "Sell"
+    }
     HomeTransactionRow(
-        title = "Solana",
-        timeMillis = receivedAt,
-        amount = homeDollarAmount(PreviewWalletState.INCOMING_USD, received = true),
-        label = "Incoming · ${PreviewWalletState.INCOMING_SOL.toPlainString()} SOL",
-        received = true,
+        title = item.symbol,
+        timeMillis = item.occurredAtMillis,
+        amount = item.amountUsd?.let { homeDollarAmount(it,
+            received = item.kind == CommunityUiActivityKind.SELL) },
+        label = action,
+        received = null,
         estimate = false,
-        onHistory = null,
+        onHistory = onHistory,
+        onHold = onClearLocalUiFlow,
     )
 }
 
 @Composable
-private fun HomePreviewPurchaseRow(purchase: PreviewWalletPurchase,
-    onTransaction: ((PreviewWalletPurchase) -> Unit)?) {
+private fun HomePredictionTransferRow(
+    item: PredictionMainTransferItem,
+    onPredictionBalance: () -> Unit,
+    onClearLocalUiFlow: () -> Unit,
+) {
+    HomeTransactionRow(
+        title = "Prediction wallet",
+        timeMillis = item.occurredAtMillis,
+        amount = homeDollarAmount(item.amountUsd, received = item.incomingToMain),
+        label = if (item.localUsdc) "Practice USDC · Solana" else "Solana",
+        received = item.incomingToMain,
+        estimate = false,
+        onHistory = onPredictionBalance,
+        tapActionLabel = "Open prediction balance.",
+        onHold = onClearLocalUiFlow.takeIf { item.localUsdc },
+    )
+}
+
+@Composable
+private fun HomePreviewFundingRow(receivedAt: Long, symbol: String, onClearLocalUiFlow: () -> Unit) {
+    val value = if (symbol == "SOL") PreviewWalletState.INCOMING_SOL_USD else PreviewWalletState.INCOMING_USDC
+    val quantity = if (symbol == "SOL") PreviewWalletState.INCOMING_SOL else PreviewWalletState.INCOMING_USDC
+    HomeTransactionRow(
+        title = symbol,
+        timeMillis = receivedAt,
+        amount = homeDollarAmount(value, received = true),
+        label = "${quantity.stripTrailingZeros().toPlainString()} $symbol · Solana",
+        received = true,
+        estimate = false,
+        onHistory = null,
+        onHold = onClearLocalUiFlow,
+    )
+}
+
+@Composable
+private fun HomePreviewPurchaseRow(purchase: PreviewWalletPurchase, onClearLocalUiFlow: () -> Unit) {
     HomeTransactionRow(
         title = purchase.symbol,
         timeMillis = purchase.purchasedAtEpochMillis,
@@ -245,13 +326,17 @@ private fun HomePreviewPurchaseRow(purchase: PreviewWalletPurchase,
         label = "Buy ${purchase.symbol}",
         received = false,
         estimate = false,
-        onHistory = onTransaction?.let { action -> { action(purchase) } },
-        tapActionLabel = "Open linked transaction in browser.",
+        onHistory = null,
+        onHold = onClearLocalUiFlow,
     )
 }
 
 @Composable
-private fun HomePreviewSpcxxRow(position: PreviewSpcxxPosition, onTransaction: () -> Unit) {
+private fun HomePreviewSpcxxRow(
+    position: PreviewSpcxxPosition,
+    onTransaction: () -> Unit,
+    onClearLocalUiFlow: () -> Unit,
+) {
     HomeTransactionRow(
         title = "SPCXx",
         timeMillis = position.purchasedAtEpochMillis,
@@ -261,6 +346,7 @@ private fun HomePreviewSpcxxRow(position: PreviewSpcxxPosition, onTransaction: (
         estimate = false,
         onHistory = onTransaction,
         tapActionLabel = "Open linked historical SPCXx transaction on Solscan.",
+        onHold = onClearLocalUiFlow,
     )
 }
 
@@ -271,8 +357,6 @@ private fun HomeWalletTransactionRow(record: TransferJournalRecord, unitPricesUs
     val assetKey = when (record.review.assetId) {
         WalletAssetId.SOLANA_SOL -> "SOLANA:native"
         WalletAssetId.SOLANA_USDC -> record.review.contractOrMint?.let { "SOLANA:$it" }
-        WalletAssetId.ETHEREUM_ETH -> "ETHEREUM:native"
-        WalletAssetId.ETHEREUM_USDC -> record.review.contractOrMint?.let { "ETHEREUM:${it.lowercase()}" }
     }
     val estimate = if (confirmed && assetKey != null) unitPricesUsd[assetKey]
         ?.let { price -> runCatching { BigDecimal(record.review.displayAmount).multiply(price) }.getOrNull() }
@@ -324,23 +408,48 @@ private fun HomePurchaseRow(transaction: CompletedPurchaseTransaction, stockSymb
 }
 
 @Composable
-private fun HomeTransactionRow(title: String, timeMillis: Long, amount: String, label: String,
+private fun HomeTransactionRow(title: String, timeMillis: Long, amount: String?, label: String,
     received: Boolean?, estimate: Boolean, onHistory: (() -> Unit)?,
-    tapActionLabel: String = "Open transaction history.") {
+    tapActionLabel: String = "Open transaction history.",
+    onHold: (() -> Unit)? = null) {
+    val currentHistory by rememberUpdatedState(onHistory)
+    val currentHold by rememberUpdatedState(onHold)
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(rd(16f)))
-            .then(if (onHistory != null) Modifier.clickable(role = Role.Button, onClick = onHistory)
-                else Modifier)
+            .then(when {
+                onHold != null -> Modifier.pointerInput(title, timeMillis) {
+                    detectPreviewRowPress(
+                        onTap = { currentHistory?.invoke() },
+                        onHold = { currentHold?.invoke() },
+                    )
+                }
+                onHistory != null -> Modifier.clickable(role = Role.Button, onClick = onHistory)
+                else -> Modifier
+            })
             .semantics(mergeDescendants = true) {
-                val valueDescription = if (amount == "$—") "USD value unavailable"
-                    else "$amount${if (estimate) " estimated" else ""}"
-                contentDescription = "$title, $valueDescription, $label." +
+                val valueDescription = when (amount) {
+                    null -> null
+                    "$—" -> "USD value unavailable"
+                    else -> "$amount${if (estimate) " estimated" else ""}"
+                }
+                contentDescription = "$title, ${valueDescription?.let { "$it, " }.orEmpty()}$label." +
                     if (onHistory != null) " $tapActionLabel" else ""
+                if (onHold != null) {
+                    if (onHistory != null) onClick(label = tapActionLabel) {
+                        currentHistory?.invoke()
+                        true
+                    }
+                    onLongClick(label = "Clear local UI-flow data") {
+                        currentHold?.invoke()
+                        true
+                    }
+                }
             }
             .padding(vertical = rd(7f)),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(rd(48f)).clip(CircleShape).background(TransactionIconBackground),
+        Box(Modifier.size(rd(48f)).clip(CircleShape).background(TransactionIconBackground)
+            .border(rd(.75f), TransactionIconEdge, CircleShape),
             contentAlignment = Alignment.Center) {
             if (received == true) RefIcon("deposit", 23f, TransactionSecondary)
             else RefIcon("arrowUpRight", 23f, TransactionSecondary)
@@ -353,14 +462,16 @@ private fun HomeTransactionRow(title: String, timeMillis: Long, amount: String, 
         }
         Spacer(Modifier.width(rd(10f)))
         Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
-            BasicText(amount, modifier = Modifier.fillMaxWidth(), style = TextStyle(
-                color = TransactionForeground,
-                fontFamily = LocalReferenceFont.current,
-                fontSize = rs(if (amount.length > 22) 12f else 14f),
-                lineHeight = rs(17f),
-                textAlign = TextAlign.End,
-            ))
-            Spacer(Modifier.height(rd(2f)))
+            if (amount != null) {
+                BasicText(amount, modifier = Modifier.fillMaxWidth(), style = TextStyle(
+                    color = TransactionForeground,
+                    fontFamily = LocalReferenceFont.current,
+                    fontSize = rs(if (amount.length > 22) 12f else 14f),
+                    lineHeight = rs(17f),
+                    textAlign = TextAlign.End,
+                ))
+                Spacer(Modifier.height(rd(2f)))
+            }
             RefText(label, 11.5f, TransactionSecondary)
         }
     }
@@ -382,7 +493,8 @@ private fun TransactionEmptyRow(title: String, description: String, onHistory: (
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.size(rd(48f)).clip(CircleShape).background(TransactionIconBackground),
+            Modifier.size(rd(48f)).clip(CircleShape).background(TransactionIconBackground)
+                .border(rd(.75f), TransactionIconEdge, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             RefIcon("history", 21f, TransactionSecondary)

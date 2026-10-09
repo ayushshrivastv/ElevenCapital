@@ -13,7 +13,7 @@ class HomeWalletActivityTest {
         val matching = record()
         val otherAccount = record(userId = "privy:other")
         val replacedId = record(walletId = "old-wallet")
-        val replacedAddress = record(sender = "0x2222222222222222222222222222222222222222")
+        val replacedAddress = record(sender = "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR")
 
         assertEquals(
             listOf(matching),
@@ -26,16 +26,14 @@ class HomeWalletActivityTest {
     }
 
     @Test
-    fun canonicalEthereumAddressMatchesButMissingIdentityAndWrongChainDoNot() {
-        val record = record(sender = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        val upper = UserWallet(WalletChain.ETHEREUM, "0x" + "A".repeat(40), WALLET)
+    fun exactSolanaAddressMatchesButMissingIdentityAndMalformedAddressDoNot() {
+        val record = record()
+        val connected = UserWallet(WalletChain.SOLANA, SENDER, WALLET)
 
-        assertEquals(listOf(record), filterHomeWalletTransactions(listOf(record), USER, listOf(upper)))
-        assertTrue(filterHomeWalletTransactions(listOf(record), USER, listOf(upper.copy(walletId = ""))).isEmpty())
+        assertEquals(listOf(record), filterHomeWalletTransactions(listOf(record), USER, listOf(connected)))
+        assertTrue(filterHomeWalletTransactions(listOf(record), USER, listOf(connected.copy(walletId = ""))).isEmpty())
         assertTrue(filterHomeWalletTransactions(listOf(record), USER,
-            listOf(upper.copy(chain = WalletChain.SOLANA))).isEmpty())
-        assertTrue(filterHomeWalletTransactions(listOf(record), USER,
-            listOf(upper.copy(address = "invalid"))).isEmpty())
+            listOf(connected.copy(address = "invalid"))).isEmpty())
     }
 
     @Test
@@ -63,14 +61,14 @@ class HomeWalletActivityTest {
             assertFalse(homeWalletTransferAmount(record(state = state)).startsWith("−"))
             assertFalse(homeWalletTransferStatus(state) == "Transfer")
         }
-        assertEquals("−0.123456789123456789 ETH",
+        assertEquals("−0.123456789 SOL",
             homeWalletTransferAmount(record(state = TransferJournalState.FINALIZED)))
         assertEquals("Confirmed", homeWalletTransferStatus(TransferJournalState.CONFIRMED))
         assertEquals("Pending", homeWalletTransferStatus(TransferJournalState.PENDING))
         assertEquals("Awaiting network", homeWalletTransferStatus(TransferJournalState.UNKNOWN))
     }
 
-    private fun wallet() = UserWallet(WalletChain.ETHEREUM, SENDER, WALLET)
+    private fun wallet() = UserWallet(WalletChain.SOLANA, SENDER, WALLET)
 
     private fun record(
         userId: String = USER,
@@ -81,10 +79,10 @@ class HomeWalletActivityTest {
         state: TransferJournalState = TransferJournalState.FINALIZED,
     ): TransferJournalRecord {
         val review = TransferDraft.create(
-            TransferSessionIdentity.create(userId, walletId, WalletNetworkId.ETHEREUM_MAINNET, sender),
-            WalletAssetId.ETHEREUM_ETH,
-            "0x3333333333333333333333333333333333333333",
-            "0.123456789123456789",
+            TransferSessionIdentity.create(userId, walletId, WalletNetworkId.SOLANA_MAINNET, sender),
+            WalletAssetId.SOLANA_SOL,
+            "So11111111111111111111111111111111111111112",
+            "0.123456789",
             createdAt,
         ).review()
         val hash = when (state) {
@@ -93,7 +91,7 @@ class HomeWalletActivityTest {
             TransferJournalState.RELEASING,
             TransferJournalState.AMBIGUOUS,
             TransferJournalState.DEFINITELY_NOT_BROADCAST -> null
-            else -> "0x" + "ab".repeat(32)
+            else -> encodeBase58(ByteArray(64) { 5 })
         }
         return TransferJournalRecord(review, state, hash, updatedAt)
     }
@@ -101,6 +99,6 @@ class HomeWalletActivityTest {
     private companion object {
         const val USER = "privy:current"
         const val WALLET = "wallet-current"
-        const val SENDER = "0x1111111111111111111111111111111111111111"
+        const val SENDER = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
     }
 }

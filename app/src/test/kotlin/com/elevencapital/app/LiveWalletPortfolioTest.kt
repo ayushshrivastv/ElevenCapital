@@ -34,12 +34,12 @@ class LiveWalletPortfolioTest {
         assertEquals(BigDecimal.ZERO, result.balanceUsd)
         assertTrue(result.holdings.isEmpty())
         assertTrue(result.holdingsComplete)
-        assertEquals(3, result.networks.size)
+        assertEquals(1, result.networks.size)
     }
 
     @Test fun `network failure cannot masquerade as zero or an empty successful wallet`() {
         val partial = emptyWallet().put("status", "partial").put("balanceUsd", JSONObject.NULL).put("holdingsComplete", false)
-        network(partial, 1).put("status", "unavailable").put("observedAt", JSONObject.NULL)
+        network(partial, 0).put("status", "unavailable").put("observedAt", JSONObject.NULL)
         val result = parse(partial)
         assertNull(result.balanceUsd)
         assertEquals(WalletPortfolioStatus.PARTIAL, result.status)
@@ -52,8 +52,6 @@ class LiveWalletPortfolioTest {
         val response = emptyWallet().put("status", "unavailable").put("balanceUsd", JSONObject.NULL)
             .put("holdingsComplete", false).put("unpricedAssets", 1).put("holdings", JSONArray().put(holding(value = JSONObject.NULL)))
         network(response, 0).put("status", "unavailable").put("observedAt", JSONObject.NULL)
-        network(response, 1).put("status", "unavailable").put("observedAt", JSONObject.NULL)
-        network(response, 2).put("status", "unavailable").put("observedAt", JSONObject.NULL)
         val result = parse(response)
         assertEquals(WalletPortfolioStatus.UNAVAILABLE, result.status)
         assertNull(result.balanceUsd)
@@ -93,13 +91,13 @@ class LiveWalletPortfolioTest {
 
     @Test fun `missing duplicate and unknown networks are rejected`() {
         val missing = emptyWallet()
-        missing.getJSONArray("networks").remove(1)
+        missing.getJSONArray("networks").remove(0)
         assertThrows(IllegalArgumentException::class.java) { parse(missing) }
         val duplicate = emptyWallet()
-        network(duplicate, 1).put("chain", "SOLANA")
+        duplicate.getJSONArray("networks").put(JSONObject(network(duplicate, 0).toString()))
         assertThrows(IllegalArgumentException::class.java) { parse(duplicate) }
         val unknown = emptyWallet()
-        network(unknown, 1).put("chain", "BASE")
+        network(unknown, 0).put("chain", "UNKNOWN")
         assertThrows(IllegalArgumentException::class.java) { parse(unknown) }
     }
 
@@ -118,8 +116,6 @@ class LiveWalletPortfolioTest {
     @Test fun `five minute observation boundary is accepted without resetting source timestamp`() {
         val atBoundary = emptyWallet().put("receivedAt", "2026-09-18T11:55:00Z")
         network(atBoundary, 0).put("observedAt", "2026-09-18T11:55:00Z")
-        network(atBoundary, 1).put("observedAt", "2026-09-18T11:55:00Z")
-        network(atBoundary, 2).put("observedAt", "2026-09-18T11:55:00Z")
         assertEquals(now.minusSeconds(300), parse(atBoundary).receivedAt)
     }
 
@@ -167,14 +163,14 @@ class LiveWalletPortfolioTest {
         assertThrows(IllegalArgumentException::class.java) { parse(response) }
     }
 
-    @Test fun `Arbitrum holdings remain distinct from Ethereum for the same Privy EVM address`() {
-        val contract = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
-        val arbUsdc = JSONObject().put("chain", "ARBITRUM").put("assetId", "ARBITRUM:$contract")
+    @Test fun `token holdings accept only Solana asset identities`() {
+        val mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        val usdc = JSONObject().put("chain", "SOLANA").put("assetId", "SOLANA:$mint")
             .put("symbol", "USDC").put("quantity", "1.25").put("unitPriceUsd", "0.99")
             .put("valueUsd", "1.2375")
-        val response = emptyWallet().put("balanceUsd", "1.2375").put("tokenHoldings", JSONArray().put(arbUsdc))
-        assertEquals(PortfolioNetwork.ARBITRUM, parse(response).tokenHoldings.single().chain)
-        arbUsdc.put("assetId", "ETHEREUM:$contract")
+        val response = emptyWallet().put("balanceUsd", "1.2375").put("tokenHoldings", JSONArray().put(usdc))
+        assertEquals(PortfolioNetwork.SOLANA, parse(response).tokenHoldings.single().chain)
+        usdc.put("assetId", "FOREIGN:$mint")
         assertThrows(IllegalArgumentException::class.java) { parse(response) }
     }
 
@@ -185,7 +181,7 @@ class LiveWalletPortfolioTest {
         assertTrue(unpriced.holdingsComplete)
         assertEquals(1, unpriced.holdings.size)
         assertNull(unpriced.balanceUsd)
-        network(response, 1).put("status", "unavailable").put("observedAt", JSONObject.NULL)
+        network(response, 0).put("status", "unavailable").put("observedAt", JSONObject.NULL)
         assertThrows(IllegalArgumentException::class.java) { parse(response) }
         response.put("holdingsComplete", false)
         assertFalse(parse(response).holdingsComplete)
@@ -217,8 +213,8 @@ class LiveWalletPortfolioTest {
         }
     }
 
-    @Test fun `multiple owned wallets are retained but EVM case variants cannot count twice`() = runBlocking {
-        val extra = UserWallet(WalletChain.ETHEREUM, "0xabcdef0000000000000000000000000000000001")
+    @Test fun `multiple owned Solana wallets are retained but duplicates cannot count twice`() = runBlocking {
+        val extra = UserWallet(WalletChain.SOLANA, "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi")
         MockWebServer().use { server ->
             server.enqueue(jsonResponse(emptyWallet().toString()))
             server.start()
@@ -226,7 +222,7 @@ class LiveWalletPortfolioTest {
             client.portfolio(wallets() + extra)
             val sent = JSONObject(requireNotNull(server.takeRequest(1, TimeUnit.SECONDS)).body.readUtf8())
             assertEquals(3, sent.getJSONArray("wallets").length())
-            val duplicate = extra.copy(address = "0xABCDEF0000000000000000000000000000000001")
+            val duplicate = extra.copy()
             val failure = runCatching { client.portfolio(wallets() + extra + duplicate) }.exceptionOrNull()
             assertTrue(failure is IllegalArgumentException)
             assertEquals(1, server.requestCount)
@@ -282,8 +278,8 @@ class LiveWalletPortfolioTest {
         assertThrows(IllegalArgumentException::class.java) { LiveWalletPortfolioClient("http://example.com") }
         assertThrows(IllegalArgumentException::class.java) { LiveWalletPortfolioClient("https://user:pass@example.com") }
         val client = LiveWalletPortfolioClient("http://127.0.0.1:9")
-        for (invalid in listOf(emptyList(), listOf(wallets()[0]), listOf(wallets()[0], wallets()[0]),
-            listOf(wallets()[0], UserWallet(WalletChain.ETHEREUM, "invalid")))) {
+        for (invalid in listOf(emptyList(), listOf(wallets()[0], wallets()[0]),
+            listOf(wallets()[0], UserWallet(WalletChain.SOLANA, "invalid")))) {
             assertTrue(runCatching { client.portfolio(invalid) }.exceptionOrNull() is IllegalArgumentException)
         }
     }
@@ -292,14 +288,14 @@ class LiveWalletPortfolioTest {
     private fun network(source: JSONObject, index: Int) = source.getJSONArray("networks").getJSONObject(index)
     private fun holding(value: Any = "0") = JSONObject().put("stockId", "backed:microsoft")
         .put("quantity", "0.000000000000000001").put("valueUsd", value)
-    private fun wallets() = listOf(UserWallet(WalletChain.SOLANA, "11111111111111111111111111111111"),
-        UserWallet(WalletChain.ETHEREUM, "0x0000000000000000000000000000000000000001"))
+    private fun wallets() = listOf(
+        UserWallet(WalletChain.SOLANA, "11111111111111111111111111111111"),
+        UserWallet(WalletChain.SOLANA, "So11111111111111111111111111111111111111112"),
+    )
     private fun jsonResponse(body: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(body)
     private fun emptyWallet() = JSONObject("""{
         "schemaVersion":1,"scope":"supported-wallet-assets","currency":"USD","status":"ok",
         "receivedAt":"2026-09-18T12:00:00Z","balanceUsd":"0","holdings":[],"tokenHoldings":[],"holdingsComplete":true,"unpricedAssets":0,
-        "networks":[{"chain":"SOLANA","status":"ok","observedAt":"2026-09-18T12:00:00Z"},
-            {"chain":"ETHEREUM","status":"ok","observedAt":"2026-09-18T12:00:00Z"},
-            {"chain":"ARBITRUM","status":"ok","observedAt":"2026-09-18T12:00:00Z"}],"message":null
+        "networks":[{"chain":"SOLANA","status":"ok","observedAt":"2026-09-18T12:00:00Z"}],"message":null
     }""")
 }

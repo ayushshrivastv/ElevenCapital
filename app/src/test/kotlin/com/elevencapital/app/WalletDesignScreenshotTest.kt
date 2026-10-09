@@ -32,7 +32,9 @@ import com.elevencapital.app.wallet.TransferJournalState
 import com.elevencapital.app.wallet.TransferSessionIdentity
 import com.elevencapital.app.wallet.WalletAssetId
 import com.elevencapital.app.wallet.WalletNetworkId
+import com.elevencapital.app.wallet.encodeBase58
 import java.math.BigDecimal
+import java.nio.file.Files
 import java.time.Instant
 import org.junit.Rule
 import org.junit.Test
@@ -108,8 +110,8 @@ class WalletDesignScreenshotTest(private val viewportWidth: Int, private val vie
     }
 
     @Test
-    fun receiveDefaultsToEthereumWithBothWallets() = capture("receive_ethereum") {
-        ReceiveWalletScreen(wallets = listOf(solanaWallet, ethereumWallet), onBack = {})
+    fun receiveUsesTheFirstAvailableSolanaWallet() = capture("receive_solana_multiple") {
+        ReceiveWalletScreen(wallets = listOf(solanaWallet, secondarySolanaWallet), onBack = {})
     }
 
     @Test
@@ -126,7 +128,7 @@ class WalletDesignScreenshotTest(private val viewportWidth: Int, private val vie
     fun sendRecipientForm() = capture("send_recipient") {
         SendWalletScreen(
             userId = "privy:wallet-design-fixture",
-            wallets = listOf(ethereumWallet, solanaWallet),
+            wallets = listOf(solanaWallet),
             onBack = {},
             onPrepare = { error("Render fixtures cannot prepare transfers") },
             onSubmit = { error("Render fixtures cannot submit transfers") },
@@ -137,27 +139,33 @@ class WalletDesignScreenshotTest(private val viewportWidth: Int, private val vie
     @Test
     fun verifiedAccountEntryOpensHomeWithoutResettingAnUnchangedSession() {
         assumeTrue("Live endpoint is required to construct the live view model", BuildConfig.MARKET_DATA_URL.isNotBlank())
-        val application = object : Application() {
-            init { attachBaseContext(paparazzi.context) }
-            override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
-                // Layoutlib's editor is a stub. Seed the empty-watchlist condition so this
-                // navigation regression exercises no unsupported disk-persistence behavior.
-                val preferences = paparazzi.context.getSharedPreferences(name, mode)
-                return object : SharedPreferences by preferences {
-                    override fun contains(key: String?): Boolean = key == "stockIds"
+        val cacheDir = Files.createTempDirectory("eleven-wallet-design-").toFile()
+        try {
+            val application = object : Application() {
+                init { attachBaseContext(paparazzi.context) }
+                override fun getCacheDir() = cacheDir
+                override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
+                    // Layoutlib's editor is a stub. Seed the empty-watchlist condition so this
+                    // navigation regression exercises no unsupported disk-persistence behavior.
+                    val preferences = paparazzi.context.getSharedPreferences(name, mode)
+                    return object : SharedPreferences by preferences {
+                        override fun contains(key: String?): Boolean = key == "stockIds"
+                    }
                 }
             }
+            val model = ElevenViewModel(application, isLive = true)
+            assertEquals(RootTab.Home, model.tab.value)
+            model.selectTab(RootTab.Markets)
+            model.setAuthenticatedUser("privy:wallet-design-first")
+            assertEquals(RootTab.Home, model.tab.value)
+            model.selectTab(RootTab.Account)
+            model.setAuthenticatedUser("privy:wallet-design-first")
+            assertEquals(RootTab.Account, model.tab.value)
+            model.setAuthenticatedUser("privy:wallet-design-second")
+            assertEquals(RootTab.Home, model.tab.value)
+        } finally {
+            cacheDir.deleteRecursively()
         }
-        val model = ElevenViewModel(application, isLive = true)
-        assertEquals(RootTab.Home, model.tab.value)
-        model.selectTab(RootTab.Markets)
-        model.setAuthenticatedUser("privy:wallet-design-first")
-        assertEquals(RootTab.Home, model.tab.value)
-        model.selectTab(RootTab.Account)
-        model.setAuthenticatedUser("privy:wallet-design-first")
-        assertEquals(RootTab.Account, model.tab.value)
-        model.setAuthenticatedUser("privy:wallet-design-second")
-        assertEquals(RootTab.Home, model.tab.value)
     }
 
     private fun capture(name: String, content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit) {
@@ -177,44 +185,48 @@ class WalletDesignScreenshotTest(private val viewportWidth: Int, private val vie
     private fun sampleTransfers(): List<TransferJournalRecord> {
         val session = TransferSessionIdentity.create(
             userId = "privy:wallet-design-fixture",
-            walletId = ethereumWallet.walletId,
-            networkId = WalletNetworkId.ETHEREUM_MAINNET,
-            walletAddress = ethereumWallet.address,
+            walletId = solanaWallet.walletId,
+            networkId = WalletNetworkId.SOLANA_MAINNET,
+            walletAddress = solanaWallet.address,
         )
         // Historical dates keep time labels independent of the current day.
         val createdAt = Instant.parse("2020-02-03T10:00:00Z").toEpochMilli()
         return listOf(
-            Triple(WalletAssetId.ETHEREUM_USDC, "120", TransferJournalState.FINALIZED),
-            Triple(WalletAssetId.ETHEREUM_ETH, "0.125", TransferJournalState.PENDING),
-            Triple(WalletAssetId.ETHEREUM_USDC, "1800", TransferJournalState.FAILED_FINALIZED),
+            Triple(WalletAssetId.SOLANA_USDC, "120", TransferJournalState.FINALIZED),
+            Triple(WalletAssetId.SOLANA_SOL, "0.125", TransferJournalState.PENDING),
+            Triple(WalletAssetId.SOLANA_USDC, "1800", TransferJournalState.FAILED_FINALIZED),
         ).mapIndexed { index, (asset, amount, state) ->
             val timestamp = createdAt - index * 3_600_000L
             val review = TransferDraft.create(
                 session = session,
                 assetId = asset,
-                recipient = "0x" + (index + 2).toString().repeat(40),
+                recipient = listOf(
+                    "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+                    "So11111111111111111111111111111111111111112",
+                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                )[index],
                 amount = amount,
                 createdAtEpochMillis = timestamp,
             ).review()
             TransferJournalRecord(
                 review = review,
                 state = state,
-                transactionId = "0x" + (index + 4).toString().repeat(64),
+                transactionId = encodeBase58(ByteArray(64) { (index + 4).toByte() }),
                 updatedAtEpochMillis = timestamp + 30_000L,
             )
         }
     }
 
     companion object {
-        private val ethereumWallet = UserWallet(
-            chain = WalletChain.ETHEREUM,
-            address = "0x1111111111111111111111111111111111111111",
-            walletId = "fixture-ethereum-wallet",
-        )
         private val solanaWallet = UserWallet(
             chain = WalletChain.SOLANA,
             address = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
             walletId = "fixture-solana-wallet",
+        )
+        private val secondarySolanaWallet = UserWallet(
+            chain = WalletChain.SOLANA,
+            address = "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+            walletId = "fixture-solana-wallet-2",
         )
 
         @JvmStatic

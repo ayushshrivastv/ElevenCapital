@@ -13,8 +13,9 @@ import org.junit.Test
 
 class WalletPortfolioTrackerTest {
     private val time = Instant.parse("2026-09-18T14:00:00Z")
-    private val wallets = listOf(UserWallet(WalletChain.SOLANA, "solana-public-address"),
-        UserWallet(WalletChain.ETHEREUM, "ethereum-public-address"))
+    private val wallets = listOf(
+        UserWallet(WalletChain.SOLANA, "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"),
+    )
     private val position = LiveWalletHolding(StockId("backed:example"), BigDecimal("0.25"), BigDecimal("123.45"))
 
     private fun snapshot(balance: BigDecimal? = BigDecimal.ZERO, holdings: List<LiveWalletHolding> = emptyList(),
@@ -42,6 +43,22 @@ class WalletPortfolioTrackerTest {
         assertFalse(tracker.refreshOnce())
         assertNull(tracker.state.value.balanceUsd)
         assertEquals("Unavailable", tracker.state.value.balancePlaceholder)
+    }
+
+    @Test fun `backend unavailable keeps known holdings without reporting a total`() = runBlocking {
+        var next = snapshot(BigDecimal("123.45"), listOf(position))
+        val tracker = WalletPortfolioTracker({ next }, { time }, { 0L })
+        tracker.bind("user-a", wallets)
+        assertTrue(tracker.refreshOnce())
+        next = snapshot(null, status = WalletPortfolioStatus.UNAVAILABLE, complete = false).copy(
+            networks = PortfolioNetwork.entries.map { LiveWalletNetwork(it, WalletNetworkStatus.UNAVAILABLE, null) },
+        )
+        assertFalse(tracker.refreshOnce())
+        val state = tracker.state.value
+        assertEquals(WalletBalancePhase.UNAVAILABLE, state.phase)
+        assertNull(state.balanceUsd)
+        assertEquals(position.quantity, state.holdings.single().quantity)
+        assertNull(state.holdings.single().valueUsd)
     }
 
     @Test fun `recent balance survives a failure but expires even if wall clock moves backwards`() = runBlocking {
@@ -97,23 +114,22 @@ class WalletPortfolioTrackerTest {
         assertTrue(tracker.state.value.holdings.isEmpty())
     }
 
-    @Test fun `Privy wallet ID or checksum casing changes do not reset the same public wallet`() = runBlocking {
+    @Test fun `Privy wallet ID changes and duplicate SDK rows do not reset the same public wallet`() = runBlocking {
         var calls = 0
-        val evm = UserWallet(WalletChain.ETHEREUM, "0xAbCdEf0000000000000000000000000000000001")
         val tracker = WalletPortfolioTracker({ owned ->
             calls++
-            assertEquals(2, owned.size)
-            assertEquals(evm.address.lowercase(), owned.single { it.chain == WalletChain.ETHEREUM }.address)
-            assertEquals(if (calls == 1) "evm-id-one" else "evm-id-two",
-                owned.single { it.chain == WalletChain.ETHEREUM }.walletId)
+            assertEquals(1, owned.size)
+            assertEquals(wallets.single().address, owned.single().address)
+            assertEquals(if (calls == 1) "sol-id-one" else "sol-id-two", owned.single().walletId)
             snapshot(BigDecimal("12.34"))
         }, { time }, { 0L })
-        assertTrue(tracker.bind("user-a", listOf(wallets[0].copy(walletId = "sol-id-one"),
-            evm.copy(walletId = "evm-id-one"))))
+        assertTrue(tracker.bind("user-a", listOf(wallets[0].copy(walletId = "sol-id-one"))))
         tracker.refreshOnce()
         assertEquals(BigDecimal("12.34"), tracker.state.value.balanceUsd)
-        assertFalse(tracker.bind("user-a", listOf(wallets[0].copy(walletId = "sol-id-two"),
-            evm.copy(address = evm.address.lowercase(), walletId = "evm-id-two"), evm)))
+        assertFalse(tracker.bind("user-a", listOf(
+            wallets[0].copy(walletId = "sol-id-two"),
+            wallets[0],
+        )))
         assertEquals(BigDecimal("12.34"), tracker.state.value.balanceUsd)
         tracker.refreshOnce()
         assertEquals(2, calls)
@@ -221,14 +237,17 @@ class WalletPortfolioTrackerTest {
         assertEquals(WalletBalancePhase.UNAVAILABLE, tracker.state.value.phase)
     }
 
-    @Test fun `unverified or incompletely provisioned account makes no balance request`() = runBlocking {
+    @Test fun `unverified or missing Solana wallet makes no balance request`() = runBlocking {
         var requests = 0
         val tracker = WalletPortfolioTracker({ requests++; snapshot() }, { time }, { 0L })
         tracker.bind(null, wallets)
         tracker.refreshOnce()
-        tracker.bind("user-a", wallets.take(1))
+        tracker.bind("user-a", emptyList())
         tracker.refreshOnce()
         assertEquals(0, requests)
+        tracker.bind("user-a", wallets)
+        tracker.refreshOnce()
+        assertEquals(1, requests)
     }
 
     @Test fun `lifecycle cancellation propagates without converting into a financial error`() = runBlocking {

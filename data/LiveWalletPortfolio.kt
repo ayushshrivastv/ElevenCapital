@@ -25,8 +25,7 @@ import org.json.JSONObject
 
 enum class WalletPortfolioStatus { OK, PARTIAL, UNAVAILABLE }
 enum class WalletNetworkStatus { OK, UNAVAILABLE }
-/** Holdings distinguish Ethereum and Arbitrum even though Privy uses one EVM address. */
-enum class PortfolioNetwork { SOLANA, ETHEREUM, ARBITRUM }
+enum class PortfolioNetwork { SOLANA }
 
 data class LiveWalletHolding(val stockId: StockId, val quantity: BigDecimal, val valueUsd: BigDecimal?)
 data class LiveWalletTokenHolding(
@@ -79,17 +78,13 @@ class LiveWalletPortfolioClient internal constructor(
     }
 
     suspend fun portfolio(wallets: List<UserWallet>): LiveWalletPortfolio {
-        // Existing Privy accounts may have multiple embedded wallets on each supported chain.
-        require(wallets.size in 2..10 && wallets.map { it.chain }.toSet() == WalletChain.entries.toSet())
-        require(wallets.groupBy { it.chain }.values.all { it.size in 1..5 })
-        val identities = wallets.map { it.chain to if (it.chain == WalletChain.ETHEREUM) it.address.lowercase() else it.address }
+        // Existing Privy accounts may have multiple embedded Solana wallets.
+        require(wallets.size in 1..5 && wallets.all { it.chain == WalletChain.SOLANA })
+        val identities = wallets.map { it.chain to it.address }
         require(identities.toSet().size == wallets.size) { "Duplicate wallet address." }
         val accounts = JSONArray()
         wallets.sortedBy { it.chain.ordinal }.forEach { wallet ->
-            require(when (wallet.chain) {
-                WalletChain.SOLANA -> wallet.address.matches(Regex("[1-9A-HJ-NP-Za-km-z]{32,44}"))
-                WalletChain.ETHEREUM -> wallet.address.matches(Regex("0x[0-9a-fA-F]{40}"))
-            }) { "Invalid wallet address." }
+            require(wallet.address.matches(Regex("[1-9A-HJ-NP-Za-km-z]{32,44}"))) { "Invalid wallet address." }
             accounts.put(JSONObject().put("chain", wallet.chain.name).put("address", wallet.address))
         }
         val body = JSONObject().put("wallets", accounts).toString().toRequestBody("application/json; charset=utf-8".toMediaType())
@@ -147,7 +142,7 @@ object LiveWalletPortfolioParser {
     private val clockSkew = Duration.ofSeconds(30)
     private val decimalPattern = Regex("(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?")
     private val stockIdPattern = Regex("(?:backed|backpack|prestocks):[A-Za-z0-9._-]{1,160}")
-    private val assetIdPattern = Regex("(?:SOLANA:(?:native|[1-9A-HJ-NP-Za-km-z]{32,44})|(?:ETHEREUM|ARBITRUM):(?:native|0x[0-9a-f]{40}))")
+    private val assetIdPattern = Regex("SOLANA:(?:native|[1-9A-HJ-NP-Za-km-z]{32,44})")
     private val tokenSymbolPattern = Regex("(?:[A-Z0-9]{1,12}|[1-9A-HJ-NP-Za-km-z]{4}…[1-9A-HJ-NP-Za-km-z]{4})")
 
     fun portfolio(source: JSONObject, now: Instant = Instant.now()): LiveWalletPortfolio {

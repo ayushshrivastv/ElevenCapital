@@ -26,11 +26,9 @@ class PortfolioSolscanLinkTest {
         assertTrue(isPortfolioSolscanUrl(devnet!!))
     }
 
-    @Test fun `SPL token links its mint and never an EVM asset`() {
+    @Test fun `SPL token links its mint and rejects malformed Solana assets`() {
         assertEquals("https://solscan.io/token/$mint",
             portfolioTokenSolscanUrl(token(PortfolioNetwork.SOLANA, "SOLANA:$mint"), wallet))
-        assertNull(portfolioTokenSolscanUrl(token(PortfolioNetwork.ETHEREUM, "ETHEREUM:native"), wallet))
-        assertNull(portfolioTokenSolscanUrl(token(PortfolioNetwork.ARBITRUM, "ARBITRUM:native"), wallet))
         assertNull(portfolioTokenSolscanUrl(token(PortfolioNetwork.SOLANA, "SOLANA:invalid"), wallet))
         assertNull(portfolioTokenSolscanUrl(token(PortfolioNetwork.SOLANA, "SOLANA:native"), "invalid"))
     }

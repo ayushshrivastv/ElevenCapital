@@ -2,7 +2,6 @@ package com.elevencapital.app.data
 
 import com.elevencapital.app.auth.UserWallet
 import com.elevencapital.app.auth.WalletChain
-import com.elevencapital.app.wallet.canonicalEthereumAddress
 import com.elevencapital.app.wallet.isCanonicalSolanaSignature
 import com.elevencapital.app.wallet.isSolanaPublicKey
 import java.io.ByteArrayOutputStream
@@ -11,7 +10,6 @@ import java.math.BigDecimal
 import java.net.URI
 import java.time.Duration
 import java.time.Instant
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -28,7 +26,7 @@ import org.json.JSONObject
 
 enum class WalletActivityStatus { OK, PARTIAL, UNAVAILABLE }
 enum class WalletActivityChain(val displayName: String) {
-    SOLANA("Solana"), SOLANA_DEVNET("Solana Devnet"), ARBITRUM("Arbitrum"), ETHEREUM("Ethereum"),
+    SOLANA("Solana"), SOLANA_DEVNET("Solana Devnet"),
 }
 enum class WalletTransactionDirection { RECEIVE, SEND }
 enum class WalletUsdBasis { CURRENT_SPOT }
@@ -79,17 +77,10 @@ data class CompletedPurchasesSnapshot(
     val transactions: List<CompletedPurchaseTransaction>,
 )
 
-/** The two SDK wallet addresses are the only identities sent to the public read-only activity API. */
+/** The SDK Solana wallet address is the only identity sent to the public read-only activity API. */
 fun activityWallets(wallets: List<UserWallet>): List<WalletActivityWallet> = buildList {
     wallets.firstOrNull { it.chain == WalletChain.SOLANA }?.let { wallet ->
         if (isSolanaPublicKey(wallet.address)) add(WalletActivityWallet(WalletActivityChain.SOLANA, wallet.address))
-    }
-    wallets.firstOrNull { it.chain == WalletChain.ETHEREUM }?.let { wallet ->
-        val address = canonicalEthereumAddress(wallet.address)?.lowercase(Locale.ROOT)
-        if (address != null) {
-            add(WalletActivityWallet(WalletActivityChain.ARBITRUM, address))
-            add(WalletActivityWallet(WalletActivityChain.ETHEREUM, address))
-        }
     }
 }
 
@@ -196,7 +187,6 @@ object CompletedPurchasesParser {
 
 private val STOCK_ID = Regex("(?:backed|backpack|prestocks):[A-Za-z0-9._-]+")
 private val DECIMAL = Regex("(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?")
-private val EVM_TRANSACTION = Regex("0x[0-9a-fA-F]{64}")
 
 private fun decimal(raw: String, positive: Boolean = false): BigDecimal {
     require(raw.length <= 120 && DECIMAL.matches(raw))
@@ -223,22 +213,15 @@ private fun safeId(value: String): String {
     return value
 }
 
-private fun validatedAddress(chain: WalletActivityChain, address: String): String = when (chain) {
-    WalletActivityChain.SOLANA, WalletActivityChain.SOLANA_DEVNET -> address.also { require(isSolanaPublicKey(it)) }
-    WalletActivityChain.ARBITRUM, WalletActivityChain.ETHEREUM -> address.also {
-        require(canonicalEthereumAddress(it)?.lowercase(Locale.ROOT) == it)
-    }
-}
+private fun validatedAddress(chain: WalletActivityChain, address: String): String =
+    address.also { require(chain in setOf(WalletActivityChain.SOLANA, WalletActivityChain.SOLANA_DEVNET) && isSolanaPublicKey(it)) }
 
 private fun transactionId(value: String, chain: WalletActivityChain): String = value.also {
-    require(when (chain) {
-        WalletActivityChain.SOLANA, WalletActivityChain.SOLANA_DEVNET -> isCanonicalSolanaSignature(it)
-        WalletActivityChain.ARBITRUM, WalletActivityChain.ETHEREUM -> EVM_TRANSACTION.matches(it)
-    })
+    require(chain in setOf(WalletActivityChain.SOLANA, WalletActivityChain.SOLANA_DEVNET) && isCanonicalSolanaSignature(it))
 }
 
 private fun anyTransactionId(value: String): String = value.also {
-    require(EVM_TRANSACTION.matches(it) || isCanonicalSolanaSignature(it))
+    require(isCanonicalSolanaSignature(it))
 }
 
 private fun recentInstant(raw: String, now: Instant): Instant = Instant.parse(raw).also {

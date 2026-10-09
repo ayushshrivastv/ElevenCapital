@@ -55,17 +55,15 @@ class WalletPortfolioTracker(
     private val mutableState = MutableStateFlow(WalletPortfolioViewState())
     val state = mutableState.asStateFlow()
     internal val hasBoundSession: Boolean get() = session != null
+    internal val boundUserId: String? get() = session?.key?.userId
 
     /** Returns true only when the verified wallet identity actually changes. */
     fun bind(userId: String?, wallets: List<UserWallet>): Boolean {
-        // Portfolio reads need only public chain/address. Privy can update wallet IDs and
-        // checksummed EVM spelling while the same wallet is connected; neither changes owner.
-        val normalized = wallets.map { wallet ->
-            if (wallet.chain == WalletChain.ETHEREUM) wallet.copy(address = wallet.address.lowercase()) else wallet
-        }.groupBy { WalletIdentity(it.chain, it.address) }.values.map { duplicates ->
+        // Portfolio reads need only the public Solana address; wallet ID changes do not change owner.
+        val normalized = wallets.groupBy { WalletIdentity(it.chain, it.address) }.values.map { duplicates ->
             duplicates.firstOrNull { it.walletId.isNotBlank() } ?: duplicates.first()
         }.sortedWith(compareBy({ it.chain.name }, { it.address }))
-        val next = userId?.takeIf { it.isNotBlank() && WalletChain.entries.all { chain -> normalized.any { it.chain == chain } } }
+        val next = userId?.takeIf { it.isNotBlank() && normalized.any { wallet -> wallet.chain == WalletChain.SOLANA } }
             ?.let { Session(SessionKey(it, normalized.map { wallet -> WalletIdentity(wallet.chain, wallet.address) }), normalized) }
         if (session?.key == next?.key) {
             // Keep current SDK wallet metadata without dropping the balance for the same addresses.
@@ -144,7 +142,11 @@ class WalletPortfolioTracker(
                 balanceUsd = result.balanceUsd.takeIf { complete },
                 holdings = holdings,
                 tokenHoldings = tokenHoldings,
-                phase = if (complete) WalletBalancePhase.READY else WalletBalancePhase.PARTIAL,
+                phase = when {
+                    complete -> WalletBalancePhase.READY
+                    result.status == WalletPortfolioStatus.UNAVAILABLE -> WalletBalancePhase.UNAVAILABLE
+                    else -> WalletBalancePhase.PARTIAL
+                },
             )
             expire()
             return result.status == WalletPortfolioStatus.OK
