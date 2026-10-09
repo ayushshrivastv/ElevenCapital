@@ -20,8 +20,6 @@ import org.json.JSONException
 import org.json.JSONObject
 
 private val statusUnsignedPattern = Regex("(?:0|[1-9][0-9]*)")
-private val statusEthereumHashPattern = Regex("0x[0-9a-f]{64}")
-private val statusEthereumInputHashPattern = Regex("0x[0-9a-fA-F]{64}")
 private val statusTimestampPattern = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z")
 private const val statusBase58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
@@ -215,11 +213,8 @@ object TransferStatusParser {
         try {
             val canonicalId = canonicalTransactionId(review.networkId, expectedTransactionId)
             val chain = source.statusString("chain", 16)
-            val chainKeys = when (chain) {
-                "ETHEREUM" -> setOf("blockNumber", "blockHash", "blockTime", "finalizedBlockNumber", "failureCode")
-                "SOLANA" -> setOf("observedSlot", "slot", "blockTime", "confirmationStatus", "failureCode")
-                else -> statusProtocolFailure()
-            }
+            if (chain != "SOLANA") statusProtocolFailure()
+            val chainKeys = setOf("observedSlot", "slot", "blockTime", "confirmationStatus", "failureCode")
             source.statusExactKeys(commonKeys + chainKeys)
             if (source.statusInteger("schemaVersion") != 1L || source.statusString("operationId", 36) != review.operationId.value ||
                 chain != review.networkId.statusWireChain() || source.statusString("caip2", 80) != review.networkCaip2 ||
@@ -240,63 +235,12 @@ object TransferStatusParser {
             val isFinalized = source.statusBoolean("isFinalized")
             val observedAt = source.statusTimestamp("observedAt")
             if (observedAt.isAfter(now.plusSeconds(30)) || observedAt.isBefore(now.minusSeconds(120))) statusProtocolFailure()
-            return when (chain) {
-                "ETHEREUM" -> parseEthereum(source, review, canonicalId, senderVerified, status, confirmations, isFinalized, observedAt)
-                "SOLANA" -> parseSolana(source, review, canonicalId, senderVerified, status, confirmations, isFinalized, observedAt)
-                else -> statusProtocolFailure()
-            }
+            return parseSolana(source, review, canonicalId, senderVerified, status, confirmations, isFinalized, observedAt)
         } catch (failure: TransferPreparationException) {
             throw failure
         } catch (_: Exception) {
             throw statusProtocolFailure()
         }
-    }
-
-    private fun parseEthereum(
-        source: JSONObject,
-        review: TransferReviewSnapshot,
-        transactionId: String,
-        senderVerified: Boolean?,
-        status: TransferLifecycleStatus,
-        confirmations: BigInteger?,
-        isFinalized: Boolean,
-        observedAt: Instant,
-    ): EthereumTransferStatus {
-        if (review.networkId != WalletNetworkId.ETHEREUM_MAINNET) statusProtocolFailure()
-        val blockNumber = source.statusNullableUnsigned("blockNumber", maximumU64)
-        val blockHash = source.statusNullableString("blockHash", 66)?.also {
-            if (!statusEthereumHashPattern.matches(it)) statusProtocolFailure()
-        }
-        val blockTime = source.statusNullableTimestamp("blockTime")
-        val finalizedBlock = source.statusNullableUnsigned("finalizedBlockNumber", maximumU64)
-        val failure = when (source.statusNullableString("failureCode", 32)) {
-            null -> null
-            "execution_reverted" -> EthereumTransferFailure.EXECUTION_REVERTED
-            else -> statusProtocolFailure()
-        }
-        val included = blockNumber != null && blockHash != null && blockTime != null && confirmations != null
-        if ((status in setOf(TransferLifecycleStatus.CONFIRMED, TransferLifecycleStatus.FINALIZED,
-                TransferLifecycleStatus.FAILED)) != included) statusProtocolFailure()
-        if (blockTime != null && blockTime.isAfter(observedAt.plusSeconds(30))) statusProtocolFailure()
-        when (status) {
-            TransferLifecycleStatus.UNKNOWN -> if (senderVerified != null || confirmations != null || included ||
-                finalizedBlock != null || failure != null || isFinalized) statusProtocolFailure()
-            TransferLifecycleStatus.PENDING -> if (senderVerified != true || confirmations != BigInteger.ZERO || included ||
-                finalizedBlock != null || failure != null || isFinalized) statusProtocolFailure()
-            TransferLifecycleStatus.CONFIRMED -> if (senderVerified != true || confirmations!!.signum() <= 0 ||
-                failure != null || isFinalized || (finalizedBlock != null && blockNumber!! <= finalizedBlock)) {
-                statusProtocolFailure()
-            }
-            TransferLifecycleStatus.FINALIZED -> if (senderVerified != true || confirmations!!.signum() <= 0 ||
-                failure != null || !isFinalized || finalizedBlock == null || blockNumber!! > finalizedBlock) statusProtocolFailure()
-            TransferLifecycleStatus.FAILED -> {
-                if (senderVerified != true || confirmations!!.signum() <= 0 || failure == null) statusProtocolFailure()
-                val derivedFinality = finalizedBlock != null && blockNumber!! <= finalizedBlock
-                if (isFinalized != derivedFinality) statusProtocolFailure()
-            }
-        }
-        return EthereumTransferStatus(review, transactionId, senderVerified, status, confirmations, isFinalized,
-            observedAt, blockNumber, blockHash, blockTime, finalizedBlock, failure)
     }
 
     private fun parseSolana(
@@ -349,16 +293,11 @@ object TransferStatusParser {
     }
 }
 
-private fun canonicalTransactionId(network: WalletNetworkId, raw: String): String = when (network) {
-    WalletNetworkId.ETHEREUM_MAINNET -> {
-        if (!statusEthereumInputHashPattern.matches(raw)) statusProtocolFailure()
-        raw.lowercase()
-    }
-    WalletNetworkId.SOLANA_MAINNET -> {
-        val bytes = decodeBase58Signature(raw)
-        if (bytes.all { it == 0.toByte() } || encodeBase58Any(bytes) != raw) statusProtocolFailure()
-        raw
-    }
+private fun canonicalTransactionId(network: WalletNetworkId, raw: String): String {
+    if (network != WalletNetworkId.SOLANA_MAINNET) statusProtocolFailure()
+    val bytes = decodeBase58Signature(raw)
+    if (bytes.all { it == 0.toByte() } || encodeBase58Any(bytes) != raw) statusProtocolFailure()
+    return raw
 }
 
 private fun decodeBase58Signature(raw: String): ByteArray {
@@ -384,14 +323,9 @@ private fun encodeBase58Any(raw: ByteArray): String {
     return "1".repeat(leading) + encoded.reverse().toString()
 }
 
-internal fun WalletNetworkId.statusWireChain(): String = when (this) {
-    WalletNetworkId.ETHEREUM_MAINNET -> "ETHEREUM"
-    WalletNetworkId.SOLANA_MAINNET -> "SOLANA"
-}
+internal fun WalletNetworkId.statusWireChain(): String = "SOLANA"
 
 internal fun WalletAssetId.statusWireAssetId(): String = when (this) {
-    WalletAssetId.ETHEREUM_ETH -> "ETHEREUM:native"
-    WalletAssetId.ETHEREUM_USDC -> "ETHEREUM:USDC"
     WalletAssetId.SOLANA_SOL -> "SOLANA:native"
     WalletAssetId.SOLANA_USDC -> "SOLANA:USDC"
 }

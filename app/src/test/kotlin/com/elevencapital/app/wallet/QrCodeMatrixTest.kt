@@ -46,6 +46,7 @@ class QrCodeMatrixTest {
         val addresses = listOf(
             "0x52908400098527886E0F7030069857D2E4169EE7",
             "So11111111111111111111111111111111111111112",
+            "eleven://token/spxtr",
         )
         addresses.forEach { address -> assertStandardsRoundTrip(QrCodeMatrix.encodeAddress(address), address) }
     }

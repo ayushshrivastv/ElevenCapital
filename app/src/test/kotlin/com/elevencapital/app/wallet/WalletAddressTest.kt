@@ -7,51 +7,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WalletAddressTest {
-    @Test fun `known EIP-55 and uniform-case addresses validate and canonicalize`() {
-        val checksummed = "0x52908400098527886E0F7030069857D2E4169EE7"
-        assertEquals(checksummed,
-            ValidatedWalletAddress.recipient(WalletNetworkId.ETHEREUM_MAINNET, checksummed).value)
-        assertEquals("0xde709f2102306220921060314715629080e2fb77",
-            ValidatedWalletAddress.recipient(WalletNetworkId.ETHEREUM_MAINNET,
-                "0xde709f2102306220921060314715629080e2fb77").value)
-        assertEquals(checksummed,
-            ValidatedWalletAddress.recipient(WalletNetworkId.ETHEREUM_MAINNET,
-                checksummed.lowercase()).value)
-    }
-
-    @Test fun `mixed-case Ethereum address requires its exact EIP-55 checksum`() {
-        val invalid = "0x52908400098527886e0F7030069857D2E4169EE7"
-        val failure = assertThrows(WalletTransferValidationException::class.java) {
-            ValidatedWalletAddress.recipient(WalletNetworkId.ETHEREUM_MAINNET, invalid)
-        }
-        assertEquals(WalletTransferErrorCode.INVALID_RECIPIENT, failure.code)
-        assertFalse(failure.userMessage.contains(invalid))
-    }
-
-    @Test fun `Ethereum blocked recipients malformed prefix length and wrong-chain formats are rejected`() {
-        val invalid = listOf(
-            ETHEREUM_ZERO_ADDRESS,
-            ETHEREUM_DEAD_ADDRESS,
-            ETHEREUM_DEAD_ADDRESS.lowercase(),
-            ETHEREUM_DEAD_ADDRESS.uppercase().replace("0X", "0x"),
-            "0X52908400098527886E0F7030069857D2E4169EE7",
-            "0x52908400098527886E0F7030069857D2E4169EE",
-            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        )
-        invalid.forEach { address ->
-            assertThrows(WalletTransferValidationException::class.java) {
-                ValidatedWalletAddress.recipient(WalletNetworkId.ETHEREUM_MAINNET, address)
-            }
-        }
-    }
-
-    @Test fun `connected Ethereum wallet validation remains format-only`() {
-        for (address in listOf(ETHEREUM_ZERO_ADDRESS, ETHEREUM_DEAD_ADDRESS)) {
-            assertEquals(canonicalEthereumAddress(address),
-                ValidatedWalletAddress.wallet(WalletNetworkId.ETHEREUM_MAINNET, address).value)
-        }
-    }
-
     @Test fun `Solana validation decodes exactly 32 bytes and canonically re-encodes`() {
         val addresses = listOf(
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",

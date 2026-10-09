@@ -367,10 +367,7 @@ private fun ColumnScope.SendReview(
     onConfirm: () -> Unit,
 ) {
     val review = prepared.review
-    val nativeAsset = when (review.networkId) {
-        WalletNetworkId.ETHEREUM_MAINNET -> WalletAssetRegistry.ethereumEth
-        WalletNetworkId.SOLANA_MAINNET -> WalletAssetRegistry.solanaSol
-    }
+    val nativeAsset = WalletAssetRegistry.solanaSol
     var currentTime by remember(prepared.review.operationId) { mutableStateOf(Instant.now()) }
     LaunchedEffect(prepared.review.operationId) {
         while (true) {

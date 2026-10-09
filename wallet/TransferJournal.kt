@@ -317,12 +317,9 @@ private fun sameJournalReview(first: TransferReviewSnapshot, second: TransferRev
 private fun safeJournalIdentity(value: String): Boolean =
     value.length in 1..200 && value.none(Char::isWhitespace) && value.none(Char::isISOControl)
 
-private fun canonicalJournalTransactionId(network: WalletNetworkId, raw: String): String = when (network) {
-    WalletNetworkId.ETHEREUM_MAINNET -> raw.lowercase().takeIf {
-        Regex("0x[0-9a-f]{64}").matches(it)
-    }
-    WalletNetworkId.SOLANA_MAINNET -> raw.takeIf(::isCanonicalSolanaSignature)
-} ?: throw IllegalArgumentException()
+private fun canonicalJournalTransactionId(network: WalletNetworkId, raw: String): String =
+    raw.takeIf { network == WalletNetworkId.SOLANA_MAINNET && isCanonicalSolanaSignature(it) }
+        ?: throw IllegalArgumentException()
 
 private data class DecodedJournal(val records: List<TransferJournalRecord>, val corrupted: Boolean)
 

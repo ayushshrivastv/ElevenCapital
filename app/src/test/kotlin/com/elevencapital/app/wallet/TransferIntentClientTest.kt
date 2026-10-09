@@ -55,9 +55,9 @@ class TransferIntentClientTest {
 
     private fun review(): TransferReviewSnapshot {
         val session = TransferSessionIdentity.create("did:privy:test-user", "wallet-one",
-            WalletNetworkId.ETHEREUM_MAINNET, "0x1111111111111111111111111111111111111111")
-        val draft = TransferDraft.create(session, WalletAssetId.ETHEREUM_ETH,
-            "0x2222222222222222222222222222222222222222", "0.1", Instant.parse("2026-09-22T12:00:00Z").toEpochMilli())
+            WalletNetworkId.SOLANA_MAINNET, "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi")
+        val draft = TransferDraft.create(session, WalletAssetId.SOLANA_SOL,
+            "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR", "0.1", Instant.parse("2026-09-22T12:00:00Z").toEpochMilli())
         return TransferReviewSnapshot(
             TransferOperationId.fromPersisted("5a40fc8d-10d4-4da9-b44f-b4e28ef917cc"), draft.review().userId,
             draft.review().walletId, draft.review().sender, draft.review().recipient, draft.review().assetId,

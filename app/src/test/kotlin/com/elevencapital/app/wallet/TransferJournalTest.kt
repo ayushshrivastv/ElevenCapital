@@ -24,7 +24,7 @@ class TransferJournalTest {
     @Test
     fun committingIsDurableRecoverableAndBlocksOnlyTheSameUserWalletAfterRestore() {
         val storage = MemoryJournalStorage()
-        val review = ethereumReview("privy:user-a", "wallet-a")
+        val review = solanaReview("privy:user-a", "wallet-a")
         val journal = journal(storage, 1_000)
 
         journal.beginCommitting(review)
@@ -43,7 +43,7 @@ class TransferJournalTest {
     @Test
     fun providerBoundaryStopsAutomaticReleaseAfterRestore() {
         val storage = MemoryJournalStorage()
-        val review = ethereumReview("privy:user-a", "wallet-a")
+        val review = solanaReview("privy:user-a", "wallet-a")
         journal(storage, 1_000).apply {
             beginCommitting(review)
             beginSubmitting(review)
@@ -58,7 +58,7 @@ class TransferJournalTest {
     @Test
     fun definitelyNotBroadcastUnblocksButAmbiguousRemainsBlocked() {
         val definitelyStorage = MemoryJournalStorage()
-        val definitelyReview = ethereumReview("privy:user-a", "wallet-a")
+        val definitelyReview = solanaReview("privy:user-a", "wallet-a")
         journal(definitelyStorage, 1_000).apply {
             beginCommitting(definitelyReview)
             beginSubmitting(definitelyReview)
@@ -75,7 +75,7 @@ class TransferJournalTest {
             definitelyRestored.recordsForVerifiedUser("privy:user-a").single().state)
 
         val ambiguousStorage = MemoryJournalStorage()
-        val ambiguousReview = ethereumReview("privy:user-a", "wallet-a")
+        val ambiguousReview = solanaReview("privy:user-a", "wallet-a")
         journal(ambiguousStorage, 1_000).apply {
             beginCommitting(ambiguousReview)
             beginSubmitting(ambiguousReview)
@@ -90,7 +90,7 @@ class TransferJournalTest {
     @Test
     fun serverGateFailureCanBeRecordedBeforeLocalSubmittingBegins() {
         val storage = MemoryJournalStorage()
-        val review = ethereumReview("privy:user-a", "wallet-a")
+        val review = solanaReview("privy:user-a", "wallet-a")
         val journal = journal(storage, 1_000)
 
         journal.recordDefinitelyNotBroadcast(review)
@@ -104,8 +104,8 @@ class TransferJournalTest {
     @Test
     fun validHashSurvivesRestoreSameStatusDoesNotRewriteAndNonfinalMayReorg() {
         val storage = MemoryJournalStorage()
-        val review = ethereumReview("privy:user-a", "wallet-a")
-        val hash = "0x" + "ab".repeat(32)
+        val review = solanaReview("privy:user-a", "wallet-a")
+        val hash = signature(5)
         val journal = journal(storage, 1_000)
         journal.beginCommitting(review)
         journal.beginSubmitting(review)
@@ -115,11 +115,11 @@ class TransferJournalTest {
         journal.markBroadcast(review, hash)
         assertEquals(writesAfterHash, storage.writeCount)
 
-        journal.markObservation(ethereumObservation(review, hash, TransferLifecycleStatus.PENDING))
+        journal.markObservation(solanaObservation(review, hash, TransferLifecycleStatus.PENDING))
         val writesAfterPending = storage.writeCount
-        journal.markObservation(ethereumObservation(review, hash, TransferLifecycleStatus.PENDING))
+        journal.markObservation(solanaObservation(review, hash, TransferLifecycleStatus.PENDING))
         assertEquals(writesAfterPending, storage.writeCount)
-        journal.markObservation(ethereumObservation(review, hash, TransferLifecycleStatus.UNKNOWN))
+        journal.markObservation(solanaObservation(review, hash, TransferLifecycleStatus.UNKNOWN))
         assertEquals(writesAfterPending + 1, storage.writeCount)
 
         val restored = journal(storage, 2_000)
@@ -133,19 +133,19 @@ class TransferJournalTest {
     @Test
     fun failedExecutionKeepsPollingUntilAuthoritativeFinality() {
         val storage = MemoryJournalStorage()
-        val review = ethereumReview("privy:user-a", "wallet-a")
-        val hash = "0x" + "cd".repeat(32)
+        val review = solanaReview("privy:user-a", "wallet-a")
+        val hash = signature(6)
         val journal = journal(storage, 1_000)
         journal.beginCommitting(review)
         journal.beginSubmitting(review)
         journal.markBroadcast(review, hash)
 
-        journal.markObservation(ethereumFailure(review, hash, finalized = false))
+        journal.markObservation(solanaFailure(review, hash, finalized = false))
         assertEquals(TransferJournalState.FAILED_NONFINAL,
             journal.recordsForVerifiedUser("privy:user-a").single().state)
         assertTrue(journal.recordsForVerifiedUser("privy:user-a").single().needsStatusPolling)
 
-        journal.markObservation(ethereumFailure(review, hash, finalized = true))
+        journal.markObservation(solanaFailure(review, hash, finalized = true))
         assertEquals(TransferJournalState.FAILED_FINALIZED,
             journal.recordsForVerifiedUser("privy:user-a").single().state)
         assertFalse(journal.recordsForVerifiedUser("privy:user-a").single().needsStatusPolling)
@@ -154,8 +154,8 @@ class TransferJournalTest {
     @Test
     fun recordsAreNeverReturnedAcrossVerifiedUsers() {
         val storage = MemoryJournalStorage()
-        val first = ethereumReview("privy:user-a", "wallet-a")
-        val second = ethereumReview("privy:user-b", "wallet-b")
+        val first = solanaReview("privy:user-a", "wallet-a")
+        val second = solanaReview("privy:user-b", "wallet-b")
         val journal = journal(storage, 1_000)
         journal.beginCommitting(first)
         journal.beginSubmitting(first)
@@ -176,7 +176,7 @@ class TransferJournalTest {
         assertFalse(journal.storageHealthy)
         assertTrue(journal.hasHashlessUnresolved("privy:user-a", "wallet-a"))
         assertThrows(TransferJournalPersistenceException::class.java) {
-            journal.beginCommitting(ethereumReview("privy:user-a", "wallet-a"))
+            journal.beginCommitting(solanaReview("privy:user-a", "wallet-a"))
         }
         assertEquals(0, storage.writeCount)
     }
@@ -184,7 +184,7 @@ class TransferJournalTest {
     @Test
     fun oneMalformedRecordMakesOtherwiseValidPersistenceFailClosed() {
         val storage = MemoryJournalStorage()
-        val review = ethereumReview("privy:user-a", "wallet-a")
+        val review = solanaReview("privy:user-a", "wallet-a")
         journal(storage, 1_000).beginCommitting(review)
         storage.value = requireNotNull(storage.value) + "\n%%%"
 
@@ -200,13 +200,13 @@ class TransferJournalTest {
     @Test
     fun failedHashPersistenceLeavesTheDurableSubmittingLockInPlace() {
         val storage = FailsAfterTwoWritesStorage()
-        val review = ethereumReview("privy:user-a", "wallet-a")
+        val review = solanaReview("privy:user-a", "wallet-a")
         val journal = TransferJournal(storage, { 1_000 })
         journal.beginCommitting(review)
         journal.beginSubmitting(review)
 
         assertThrows(TransferJournalPersistenceException::class.java) {
-            journal.markBroadcast(review, "0x" + "12".repeat(32))
+            journal.markBroadcast(review, signature(7))
         }
 
         val restored = TransferJournal(storage, { 2_000 })
@@ -218,27 +218,27 @@ class TransferJournalTest {
     private fun journal(storage: MemoryJournalStorage, now: Long): TransferJournal =
         TransferJournal(storage, { now })
 
-    private fun ethereumReview(userId: String, walletId: String): TransferReviewSnapshot {
+    private fun solanaReview(userId: String, walletId: String): TransferReviewSnapshot {
         val session = TransferSessionIdentity.create(
             userId = userId,
             walletId = walletId,
-            networkId = WalletNetworkId.ETHEREUM_MAINNET,
-            walletAddress = "0x1111111111111111111111111111111111111111",
+            networkId = WalletNetworkId.SOLANA_MAINNET,
+            walletAddress = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
         )
         return TransferDraft.create(
             session = session,
-            assetId = WalletAssetId.ETHEREUM_ETH,
-            recipient = "0x2222222222222222222222222222222222222222",
+            assetId = WalletAssetId.SOLANA_SOL,
+            recipient = "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
             amount = "0.125",
             createdAtEpochMillis = 500,
         ).review()
     }
 
-    private fun ethereumObservation(
+    private fun solanaObservation(
         review: TransferReviewSnapshot,
         hash: String,
         status: TransferLifecycleStatus,
-    ): EthereumTransferStatus = EthereumTransferStatus(
+    ): SolanaTransferStatus = SolanaTransferStatus(
         review = review,
         transactionId = hash,
         senderVerified = if (status == TransferLifecycleStatus.UNKNOWN) null else true,
@@ -246,18 +246,18 @@ class TransferJournalTest {
         confirmations = if (status == TransferLifecycleStatus.UNKNOWN) null else BigInteger.ZERO,
         isFinalized = false,
         observedAt = Instant.ofEpochMilli(900),
-        blockNumber = null,
-        blockHash = null,
+        observedSlot = 1L,
+        slot = null,
         blockTime = null,
-        finalizedBlockNumber = null,
+        confirmationStatus = null,
         failure = null,
     )
 
-    private fun ethereumFailure(
+    private fun solanaFailure(
         review: TransferReviewSnapshot,
         hash: String,
         finalized: Boolean,
-    ): EthereumTransferStatus = EthereumTransferStatus(
+    ): SolanaTransferStatus = SolanaTransferStatus(
         review = review,
         transactionId = hash,
         senderVerified = true,
@@ -265,12 +265,14 @@ class TransferJournalTest {
         confirmations = BigInteger.ONE,
         isFinalized = finalized,
         observedAt = Instant.ofEpochMilli(900),
-        blockNumber = BigInteger.ONE,
-        blockHash = "0x" + "ef".repeat(32),
+        observedSlot = 2L,
+        slot = 1L,
         blockTime = Instant.ofEpochMilli(800),
-        finalizedBlockNumber = if (finalized) BigInteger.ONE else null,
-        failure = EthereumTransferFailure.EXECUTION_REVERTED,
+        confirmationStatus = if (finalized) SolanaConfirmationStatus.FINALIZED else SolanaConfirmationStatus.CONFIRMED,
+        failure = SolanaTransferFailure.TRANSACTION_ERROR,
     )
+
+    private fun signature(seed: Int): String = encodeBase58(ByteArray(64) { seed.toByte() })
 }
 
 private class MemoryJournalStorage(initial: String? = null) : TransferJournalStorage {

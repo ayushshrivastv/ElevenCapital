@@ -212,19 +212,11 @@ class TransferPreparationClient internal constructor(
 /** Strict, independently testable decoder for the short-lived unsigned preparation. */
 object PreparedTransferParser {
     private val integerPattern = Regex("(?:0|[1-9][0-9]*)")
-    private val hexQuantityPattern = Regex("0x(?:0|[1-9a-f][0-9a-f]*)")
-    private val hexDataPattern = Regex("0x[0-9a-f]*")
     private val timestampPattern = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z")
     private val maximumU64 = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE)
-    private val maximumU256 = BigInteger.ONE.shiftLeft(256).subtract(BigInteger.ONE)
     private val maximumSignedLong = BigInteger.valueOf(Long.MAX_VALUE)
     // Independent client ceilings ensure a compromised or misconfigured backend cannot turn an
     // otherwise valid transaction into an economically unbounded network fee.
-    private val maximumEthereumNativeGas = BigInteger("50000")
-    private val maximumEthereumTokenGas = BigInteger("150000")
-    private val maximumEthereumPriorityFeePerGas = BigInteger("10000000000")
-    private val maximumEthereumFeePerGas = BigInteger("2000000000000")
-    private val maximumEthereumTotalFee = BigInteger("50000000000000000")
     private val maximumSolanaTransferFee = BigInteger("5000000")
     private val commonKeys = setOf(
         "schemaVersion", "operationId", "chain", "caip2", "asset", "sender", "recipient", "amount",
@@ -234,11 +226,8 @@ object PreparedTransferParser {
     fun parse(source: JSONObject, review: TransferReviewSnapshot, now: Instant = Instant.now()): PreparedTransfer {
         try {
             val chain = source.strictString("chain", 16)
-            val chainKeys = when (chain) {
-                "ETHEREUM" -> setOf("observedBlock", "transaction")
-                "SOLANA" -> setOf("observedSlot", "recentBlockhash", "lastValidBlockHeight", "transactionBase64", "encoding")
-                else -> protocolFailure()
-            }
+            if (chain != "SOLANA") protocolFailure()
+            val chainKeys = setOf("observedSlot", "recentBlockhash", "lastValidBlockHeight", "transactionBase64", "encoding")
             source.requireExactKeys(commonKeys + chainKeys)
             if (source.strictInteger("schemaVersion") != 1L) protocolFailure()
             if (source.strictString("operationId", 36) != review.operationId.value) protocolFailure()
@@ -254,19 +243,14 @@ object PreparedTransferParser {
             if (baseUnits.toString() != review.baseUnits) protocolFailure()
             val balance = source.unsigned("balanceBaseUnits", asset.maximumBaseUnits())
             if (balance < baseUnits) protocolFailure()
-            val feeBound = if (review.networkId == WalletNetworkId.SOLANA_MAINNET) maximumU64 else maximumU256
-            val estimatedFee = source.unsigned("estimatedFeeBaseUnits", feeBound)
-            val maxFee = source.unsigned("maxFeeBaseUnits", feeBound)
+            val estimatedFee = source.unsigned("estimatedFeeBaseUnits", maximumU64)
+            val maxFee = source.unsigned("maxFeeBaseUnits", maximumU64)
             if (estimatedFee.signum() <= 0 || maxFee < estimatedFee) protocolFailure()
             val preparedAt = source.timestamp("preparedAt")
             val expiresAt = source.timestamp("expiresAt")
             validateLifetime(preparedAt, expiresAt, now)
 
-            return when (chain) {
-                "ETHEREUM" -> parseEthereum(source, review, asset, balance, estimatedFee, maxFee, preparedAt, expiresAt)
-                "SOLANA" -> parseSolana(source, review, asset, balance, estimatedFee, maxFee, preparedAt, expiresAt)
-                else -> protocolFailure()
-            }
+            return parseSolana(source, review, asset, balance, estimatedFee, maxFee, preparedAt, expiresAt)
         } catch (failure: TransferPreparationException) {
             throw failure
         } catch (_: Exception) {
@@ -278,92 +262,16 @@ object PreparedTransferParser {
         source.requireExactKeys(setOf("id", "symbol", "kind", "address", "decimals"))
         if (source.strictString("id", 32) != expected.id.wireId()) protocolFailure()
         if (source.strictString("symbol", 16) != expected.symbol) protocolFailure()
-        val expectedKind = when (expected.kind) {
-            WalletAssetKind.NATIVE -> "native"
-            WalletAssetKind.TOKEN -> if (expected.network.id == WalletNetworkId.ETHEREUM_MAINNET) "erc20" else protocolFailure()
-        }
+        val expectedKind = if (expected.kind == WalletAssetKind.NATIVE) "native" else "spl"
         if (source.strictString("kind", 16) != expectedKind) protocolFailure()
         val rawAddress = source.nullableStrictString("address", 64)
         if (expected.contractOrMint == null) {
             if (rawAddress != null) protocolFailure()
         } else {
-            val network = expected.network.id
-            val canonical = rawAddress?.let { canonicalAddress(network, it) } ?: protocolFailure()
-            if (canonical != canonicalAddress(network, expected.contractOrMint)) protocolFailure()
+            val canonical = rawAddress?.let(::canonicalSolanaPublicKey) ?: protocolFailure()
+            if (canonical != canonicalSolanaPublicKey(expected.contractOrMint)) protocolFailure()
         }
         if (source.strictInteger("decimals") != expected.decimals.toLong()) protocolFailure()
-    }
-
-    private fun parseEthereum(
-        source: JSONObject,
-        review: TransferReviewSnapshot,
-        asset: WalletAsset,
-        balance: BigInteger,
-        estimatedFee: BigInteger,
-        maxFee: BigInteger,
-        preparedAt: Instant,
-        expiresAt: Instant,
-    ): EthereumPreparedTransfer {
-        if (asset.network.id != WalletNetworkId.ETHEREUM_MAINNET) protocolFailure()
-        val observedBlock = source.unsigned("observedBlock", maximumU64)
-        if (observedBlock.signum() <= 0) protocolFailure()
-        val transaction = source.strictObject("transaction")
-        val type = transaction.strictString("type", 3)
-        val required = setOf("chainId", "from", "to", "nonce", "gas", "value", "data", "type")
-        val feeKeys = when (type) {
-            "0x0" -> setOf("gasPrice")
-            "0x2" -> setOf("maxFeePerGas", "maxPriorityFeePerGas")
-            else -> protocolFailure()
-        }
-        transaction.requireExactKeys(required + feeKeys)
-        if (transaction.strictString("chainId", 3) != "0x1") protocolFailure()
-        val from = transaction.canonicalEthereum("from")
-        if (from != review.sender.value) protocolFailure()
-        val to = transaction.canonicalEthereum("to")
-        val nonce = transaction.hexQuantity("nonce", maximumU64)
-        val gasCeiling = if (asset.kind == WalletAssetKind.NATIVE) maximumEthereumNativeGas else maximumEthereumTokenGas
-        val gas = transaction.hexQuantity("gas", gasCeiling)
-        if (gas < BigInteger("21000")) protocolFailure()
-        val value = transaction.hexQuantity("value", maximumU256)
-        val data = transaction.strictString("data", 512)
-        if (!hexDataPattern.matches(data) || data.length % 2 != 0) protocolFailure()
-        val expectedTo: String
-        val expectedValue: BigInteger
-        val expectedData: String
-        if (asset.kind == WalletAssetKind.NATIVE) {
-            expectedTo = review.recipient.value
-            expectedValue = BigInteger(review.baseUnits)
-            expectedData = "0x"
-        } else {
-            expectedTo = canonicalAddress(WalletNetworkId.ETHEREUM_MAINNET,
-                requireNotNull(asset.contractOrMint))
-            expectedValue = BigInteger.ZERO
-            expectedData = "0xa9059cbb" + review.recipient.value.substring(2).lowercase().padStart(64, '0') +
-                BigInteger(review.baseUnits).toString(16).padStart(64, '0')
-        }
-        if (to != expectedTo || value != expectedValue || data != expectedData) protocolFailure()
-
-        var gasPrice: String? = null
-        var maxFeePerGas: String? = null
-        var maxPriorityFeePerGas: String? = null
-        if (type == "0x0") {
-            gasPrice = transaction.strictString("gasPrice", 68)
-            val price = parseHexQuantity(gasPrice, maximumEthereumFeePerGas)
-            if (price.signum() <= 0 || gas * price != maxFee || estimatedFee != maxFee) protocolFailure()
-        } else {
-            maxFeePerGas = transaction.strictString("maxFeePerGas", 68)
-            maxPriorityFeePerGas = transaction.strictString("maxPriorityFeePerGas", 68)
-            val maximumPrice = parseHexQuantity(maxFeePerGas, maximumEthereumFeePerGas)
-            val priority = parseHexQuantity(maxPriorityFeePerGas, maximumEthereumPriorityFeePerGas)
-            if (priority.signum() <= 0 || maximumPrice < priority || gas * maximumPrice != maxFee) protocolFailure()
-        }
-        if (maxFee > maximumEthereumTotalFee) protocolFailure()
-        if (asset.kind == WalletAssetKind.NATIVE && balance < BigInteger(review.baseUnits) + maxFee) protocolFailure()
-        return EthereumPreparedTransfer(
-            review, asset, balance, estimatedFee, maxFee, preparedAt, expiresAt, observedBlock,
-            EthereumTransactionRequest("0x1", from, to, nonce.toHexQuantity(), gas.toHexQuantity(),
-                value.toHexQuantity(), data, type, gasPrice, maxFeePerGas, maxPriorityFeePerGas),
-        )
     }
 
     private fun parseSolana(
@@ -446,21 +354,6 @@ object PreparedTransferParser {
         return DecodedSolanaTransfer(keys[0], keys[1], blockhash, amount.toString())
     }
 
-    private fun JSONObject.canonicalEthereum(key: String): String {
-        val raw = strictString(key, 42)
-        return canonicalEthereumAddress(raw) ?: protocolFailure()
-    }
-
-    private fun JSONObject.hexQuantity(key: String, maximum: BigInteger): BigInteger =
-        parseHexQuantity(strictString(key, 68), maximum)
-
-    private fun parseHexQuantity(raw: String, maximum: BigInteger): BigInteger {
-        if (!hexQuantityPattern.matches(raw)) protocolFailure()
-        val value = BigInteger(raw.substring(2), 16)
-        if (value > maximum) protocolFailure()
-        return value
-    }
-
     private fun JSONObject.unsigned(key: String, maximum: BigInteger): BigInteger {
         val raw = strictString(key, 78)
         if (!integerPattern.matches(raw)) protocolFailure()
@@ -476,26 +369,14 @@ object PreparedTransferParser {
     }
 }
 
-private fun WalletNetworkId.wireChain(): String = when (this) {
-    WalletNetworkId.ETHEREUM_MAINNET -> "ETHEREUM"
-    WalletNetworkId.SOLANA_MAINNET -> "SOLANA"
-}
+private fun WalletNetworkId.wireChain(): String = "SOLANA"
 
 private fun WalletAssetId.wireId(): String = when (this) {
-    WalletAssetId.ETHEREUM_ETH -> "ETHEREUM:native"
-    WalletAssetId.ETHEREUM_USDC -> "ETHEREUM:USDC"
     WalletAssetId.SOLANA_SOL -> "SOLANA:native"
     WalletAssetId.SOLANA_USDC -> "SOLANA:USDC"
 }
 
 private fun WalletAsset.maximumBaseUnits(): BigInteger = BigInteger.ONE.shiftLeft(baseUnitBits).subtract(BigInteger.ONE)
-
-private fun canonicalAddress(network: WalletNetworkId, raw: String): String = when (network) {
-    WalletNetworkId.ETHEREUM_MAINNET -> canonicalEthereumAddress(raw)
-    WalletNetworkId.SOLANA_MAINNET -> canonicalSolanaPublicKey(raw)
-} ?: protocolFailure()
-
-private fun BigInteger.toHexQuantity(): String = "0x" + toString(16)
 
 internal fun JSONObject.requireExactKeys(expected: Set<String>) {
     if (keys().asSequence().toSet() != expected) protocolFailure()

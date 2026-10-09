@@ -7,7 +7,7 @@ import kotlin.math.max
 /**
  * Small, dependency-free QR encoder for wallet receive addresses.
  *
- * Eleven Capital only encodes plain ASCII Ethereum/Solana addresses. A fixed
+ * Eleven Capital only encodes plain ASCII Solana addresses. A fixed
  * version-6, error-correction-H symbol leaves enough recovery capacity for the
  * small centered logo used by the supplied receive reference.
  */

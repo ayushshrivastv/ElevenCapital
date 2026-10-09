@@ -15,83 +15,15 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TransferStatusClientTest {
     private val accessToken = "headerheader.payloadpayload.signaturesignature"
     private val tokenProvider = TransferAccessTokenProvider { accessToken }
     private val now = Instant.parse("2026-09-22T12:00:00Z")
-    private val ethSender = "0x1111111111111111111111111111111111111111"
-    private val ethRecipient = "0x2222222222222222222222222222222222222222"
-    private val ethHash = "0x" + "ab".repeat(32)
-    private val blockHash = "0x" + "cd".repeat(32)
     private val solSender = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
     private val solRecipient = "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR"
     private val signature = base58(ByteArray(64) { 5 })
-
-    @Test fun `Ethereum unknown is distinct from failure and never permits automatic resend`() {
-        val review = ethereumReview()
-        val result = TransferStatusParser.parse(ethereumStatus(review, "unknown"), review, ethHash, now)
-            as EthereumTransferStatus
-        assertEquals(TransferLifecycleStatus.UNKNOWN, result.status)
-        assertFalse(result.hasFailed)
-        assertFalse(result.permitsAutomaticResend)
-        assertNull(result.senderVerified)
-        assertNull(result.confirmations)
-        assertNull(result.blockNumber)
-        assertNull(result.failure)
-    }
-
-    @Test fun `Ethereum status preserves pending confirmation finality and execution failure`() {
-        val review = ethereumReview()
-        val pending = TransferStatusParser.parse(ethereumStatus(review, "pending"), review, ethHash, now)
-            as EthereumTransferStatus
-        assertEquals(TransferLifecycleStatus.PENDING, pending.status)
-        assertEquals(BigInteger.ZERO, pending.confirmations)
-        assertEquals(true, pending.senderVerified)
-
-        val confirmed = TransferStatusParser.parse(ethereumStatus(review, "confirmed"), review, ethHash, now)
-            as EthereumTransferStatus
-        assertEquals(BigInteger("105"), confirmed.blockNumber)
-        assertEquals(BigInteger("8"), confirmed.confirmations)
-        assertFalse(confirmed.isFinalized)
-
-        val finalized = TransferStatusParser.parse(ethereumStatus(review, "finalized"), review, ethHash, now)
-            as EthereumTransferStatus
-        assertTrue(finalized.isFinalized)
-        assertEquals(TransferLifecycleStatus.FINALIZED, finalized.status)
-
-        val failed = TransferStatusParser.parse(ethereumStatus(review, "failed"), review, ethHash, now)
-            as EthereumTransferStatus
-        assertTrue(failed.hasFailed)
-        assertTrue(failed.isFinalized)
-        assertEquals(EthereumTransferFailure.EXECUTION_REVERTED, failed.failure)
-        assertFalse(failed.permitsAutomaticResend)
-
-        val nonfinalFailure = ethereumStatus(review, "failed")
-            .put("blockNumber", "105")
-            .put("isFinalized", false)
-        val observedNonfinal = TransferStatusParser.parse(nonfinalFailure, review, ethHash, now)
-            as EthereumTransferStatus
-        assertEquals(TransferLifecycleStatus.FAILED, observedNonfinal.status)
-        assertFalse(observedNonfinal.isFinalized)
-    }
-
-    @Test fun `Ethereum contradictory inclusion sender failure and finality metadata fail closed`() {
-        val review = ethereumReview()
-        for (change in listOf<(JSONObject) -> Unit>(
-            { it.put("operationId", "5a40fc8d-10d4-4da9-b44f-b4e28ef917cc") },
-            { it.put("transactionId", "0x" + "ef".repeat(32)) },
-            { it.put("senderVerified", false) },
-            { it.put("status", "unknown") },
-            { it.put("blockNumber", JSONObject.NULL) },
-            { it.put("isFinalized", true) },
-            { it.put("failureCode", "execution_reverted") },
-            { it.put("unexpected", true) },
-        )) assertProtocol { TransferStatusParser.parse(ethereumStatus(review, "confirmed").also(change),
-            review, ethHash, now) }
-    }
 
     @Test fun `Solana status binds canonical signature and keeps unknown pending confirmed finalized and failed separate`() {
         val review = solanaReview()
@@ -119,7 +51,7 @@ class TransferStatusClientTest {
 
     @Test fun `Solana rejects malformed signature slot overflow and contradictory status metadata`() {
         val review = solanaReview()
-        for (invalid in listOf("1".repeat(64), ethHash, signature.dropLast(1) + "0")) {
+        for (invalid in listOf("1".repeat(64), "not-a-signature", signature.dropLast(1) + "0")) {
             assertProtocol { TransferStatusParser.parse(solanaStatus(review, "unknown"), review, invalid, now) }
         }
         for (change in listOf<(JSONObject) -> Unit>(
@@ -144,11 +76,10 @@ class TransferStatusClientTest {
     }
 
     @Test fun `status client posts only bound identity and parses no-store response`() = runBlocking {
-        val review = ethereumReview()
-        val (http, requests) = fakeHttp(FakeResponse(200, ethereumStatus(review, "confirmed").toString()))
-        val uppercaseHash = "0x" + ethHash.substring(2).uppercase()
+        val review = solanaReview()
+        val (http, requests) = fakeHttp(FakeResponse(200, solanaStatus(review, "confirmed").toString()))
         val result = TransferStatusClient("https://wallet.eleven.test", tokenProvider, http, now = { now })
-            .status(review, uppercaseHash)
+            .status(review, signature)
         assertEquals(TransferLifecycleStatus.CONFIRMED, result.status)
         val request = requests.single()
         assertEquals("POST", request.method)
@@ -159,57 +90,31 @@ class TransferStatusClientTest {
         val sent = JSONObject(buffer.readUtf8())
         assertEquals(setOf("schemaVersion", "operationId", "walletId", "chain", "sender", "recipient", "assetId", "baseUnits", "transactionId"),
             sent.keys().asSequence().toSet())
-        assertEquals(ethHash, sent.getString("transactionId"))
+        assertEquals(signature, sent.getString("transactionId"))
         assertEquals(review.operationId.value, sent.getString("operationId"))
         assertEquals(review.walletId, sent.getString("walletId"))
         assertEquals(review.recipient.value, sent.getString("recipient"))
-        assertEquals("ETHEREUM:native", sent.getString("assetId"))
+        assertEquals("SOLANA:native", sent.getString("assetId"))
         assertEquals(review.baseUnits, sent.getString("baseUnits"))
     }
 
     @Test fun `status mismatch is typed without exposing upstream detail`() = runBlocking {
-        val review = ethereumReview()
+        val review = solanaReview()
         val (http, _) = fakeHttp(
             FakeResponse(422, """{"error":"transaction_mismatch","message":"sensitive wallet detail"}"""),
         )
         val failure = runCatching {
-            TransferStatusClient("https://wallet.eleven.test", tokenProvider, http, now = { now }).status(review, ethHash)
+            TransferStatusClient("https://wallet.eleven.test", tokenProvider, http, now = { now }).status(review, signature)
         }.exceptionOrNull() as TransferPreparationException
         assertEquals(TransferPreparationFailureCode.TRANSACTION_MISMATCH, failure.code)
         assertFalse(failure.retryable)
         assertFalse(failure.message.orEmpty().contains("sensitive"))
     }
 
-    private fun ethereumReview(): TransferReviewSnapshot {
-        val session = TransferSessionIdentity.create("privy-user", "privy-wallet", WalletNetworkId.ETHEREUM_MAINNET,
-            ethSender)
-        return TransferDraft.create(session, WalletAssetId.ETHEREUM_ETH, ethRecipient, "0.1", now.toEpochMilli()).review()
-    }
-
     private fun solanaReview(): TransferReviewSnapshot {
         val session = TransferSessionIdentity.create("privy-user", "privy-wallet", WalletNetworkId.SOLANA_MAINNET,
             solSender)
         return TransferDraft.create(session, WalletAssetId.SOLANA_SOL, solRecipient, "1", now.toEpochMilli()).review()
-    }
-
-    private fun ethereumStatus(review: TransferReviewSnapshot, state: String): JSONObject {
-        val included = state in setOf("confirmed", "finalized", "failed")
-        val block = if (state in setOf("finalized", "failed")) "96" else "105"
-        return JSONObject()
-            .put("schemaVersion", 1).put("operationId", review.operationId.value).put("chain", "ETHEREUM")
-            .put("caip2", "eip155:1").put("transactionId", ethHash).put("sender", review.sender.value)
-            .put("senderVerified", if (state == "unknown") JSONObject.NULL else true)
-            .put("status", state).put("confirmations", when {
-                state == "unknown" -> JSONObject.NULL
-                state == "pending" -> "0"
-                else -> "8"
-            }).put("isFinalized", state in setOf("finalized", "failed"))
-            .put("observedAt", "2026-09-22T12:00:00.000Z")
-            .put("blockNumber", if (included) block else JSONObject.NULL)
-            .put("blockHash", if (included) blockHash else JSONObject.NULL)
-            .put("blockTime", if (included) "2026-09-22T11:59:00.000Z" else JSONObject.NULL)
-            .put("finalizedBlockNumber", if (included) "100" else JSONObject.NULL)
-            .put("failureCode", if (state == "failed") "execution_reverted" else JSONObject.NULL)
     }
 
     private fun solanaStatus(review: TransferReviewSnapshot, state: String): JSONObject {
