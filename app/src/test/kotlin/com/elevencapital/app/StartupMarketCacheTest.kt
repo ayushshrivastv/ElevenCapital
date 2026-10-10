@@ -46,6 +46,23 @@ class StartupMarketCacheTest {
         assertTrue(cache.read().isEmpty())
     }
 
+    @Test fun `upstream cached receipt survives a later response and expires on the source deadline`() = runBlocking {
+        val directory = temporary.newFolder()
+        val originalReceipt = now - 240_000
+        val source = chart("robinhood:test").copy(basis = "underlying_share_reference",
+            receivedAt = Instant.ofEpochMilli(originalReceipt))
+        val cache = StartupMarketCache(directory, backend) { now }
+        cache.write(listOf(CachedStartupChart(source, now)))
+        val restored = requireNotNull(cache.read().singleOrNull())
+        assertEquals(originalReceipt, restored.receivedAtMillis)
+        assertEquals(source, restored.chart)
+        cache.write(listOf(restored.copy(receivedAtMillis = now)))
+        now += 60_000
+        assertTrue(cache.read().isEmpty())
+        cache.write(listOf(CachedStartupChart(source.copy(receivedAt = Instant.ofEpochMilli(now + 1)), now)))
+        assertTrue(cache.read().isEmpty())
+    }
+
     @Test fun `a different backend cannot reuse cached chart data`() = runBlocking {
         val directory = temporary.newFolder()
         StartupMarketCache(directory, backend) { now }.write(listOf(CachedStartupChart(chart(), now)))

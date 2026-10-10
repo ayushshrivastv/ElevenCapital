@@ -17,6 +17,50 @@ class MarketCatalogPerformanceTest {
     private val stock = Stock(StockId("backed:test"), "TEST", "Test", StockQuote(BigDecimal.ONE, "USD", asOf = now))
     private val instrument = LiveInstrument(stock, "backed", "Backed", null, now, "onchain_token_market", "quoted_currency")
 
+    @Test fun `background catalog projection keeps newest quote and original chart observation times`() {
+        val range = ChartRange.ONE_DAY
+        val oldPoint = StockPricePoint(now.minusSeconds(1), BigDecimal.ONE)
+        val previous = stock.copy(charts = mapOf(range to listOf(oldPoint)))
+        val incoming = instrument.copy(stock = stock.copy(quote = stock.quote.copy(price = BigDecimal.TEN)))
+        val chart = LiveChart(stock.id, range, "ok", "USD", listOf(oldPoint), "onchain_token_market")
+        val projected = projectCatalogStock(incoming, previous, false, false, now, 1_000, now.toEpochMilli(),
+            mapOf((stock.id to range) to chart), mapOf((stock.id to range) to 900L), MarketCatalogExpiryCache())
+        assertSame(incoming.stock.quote, projected.quote)
+        assertEquals(listOf(oldPoint, StockPricePoint(now, BigDecimal.TEN)), projected.charts[range])
+        assertEquals(now, projected.quote.asOf)
+        assertEquals(listOf(oldPoint), previous.charts[range])
+        assertEquals(listOf(oldPoint), chart.points)
+    }
+
+    @Test fun `background projection removes expired graphs and graphs from a changed price basis`() {
+        val range = ChartRange.ONE_DAY
+        val previous = stock.copy(charts = mapOf(range to listOf(StockPricePoint(now, BigDecimal.ONE))))
+        val receipts = mapOf((stock.id to range) to 100L)
+        val expired = projectCatalogStock(instrument, previous, false, false, now, 300_100, now.toEpochMilli(),
+            emptyMap(), receipts, MarketCatalogExpiryCache())
+        val changed = projectCatalogStock(instrument, previous, true, false, now, 101, now.toEpochMilli(),
+            emptyMap(), receipts, MarketCatalogExpiryCache())
+        assertTrue(expired.charts.isEmpty())
+        assertTrue(changed.charts.isEmpty())
+        assertEquals(BigDecimal.ONE, expired.quote.price)
+        assertEquals(BigDecimal.ONE, changed.quote.price)
+    }
+
+    @Test fun `background freshness projection never gives cached prices a new observation age`() {
+        val id = StockId("robinhood:test")
+        val activity = StockMarketActivity("USD", "GeckoTerminal", "robinhood_chain_token",
+            BigDecimal.TEN, BigDecimal.ONE, now, now, null, null)
+        val original = stock.copy(id = id, activity = activity)
+        val incoming = instrument.copy(stock = original, provider = "robinhood")
+        val projected = projectCatalogStock(incoming, null, false, true, now.plusSeconds(301), 1_000,
+            now.plusSeconds(301).toEpochMilli(), emptyMap(), emptyMap(), MarketCatalogExpiryCache())
+        assertSame(original.quote, projected.quote)
+        assertEquals(now, projected.quote.asOf)
+        assertNull(projected.activity?.volume24h)
+        assertNull(projected.activity?.netVolume24h)
+        assertEquals(now, projected.activity?.receivedAt)
+    }
+
     @Test fun `reopening a canceled warmup loads foreground history and completed warmups remain reusable`() = runBlocking {
         val chart = LiveChart(stock.id, ChartRange.ONE_DAY, "ok", "USD",
             listOf(StockPricePoint(now, BigDecimal.ONE)), "onchain_token_market")
@@ -122,17 +166,17 @@ class MarketCatalogPerformanceTest {
         assertSame(input.quote, expired.quote)
     }
 
-    @Test fun `prewarm targets include first twenty listings from each source and ignore quote changes`() {
-        val instruments = listOf("backed", "backpack", "prestocks").flatMap { provider ->
+    @Test fun `prewarm targets keep a bounded first five listings from each source and ignore quote changes`() {
+        val instruments = listOf("backed", "backpack", "prestocks", "robinhood").flatMap { provider ->
             (0 until 24).map { index -> instrument.copy(provider = provider,
                 stock = stock.copy(id = StockId("$provider:$index"), symbol = "LISTING$index")) }
         }
         val targets = marketPrewarmTargets(instruments)
-        assertEquals(60, targets.size)
-        assertEquals(72, instruments.size)
-        for (index in 0 until 20) {
-            assertEquals(listOf("backed:$index", "backpack:$index", "prestocks:$index"),
-                targets.drop(index * 3).take(3).map { it.first.value })
+        assertEquals(20, targets.size)
+        assertEquals(96, instruments.size)
+        for (index in 0 until 5) {
+            assertEquals(listOf("backed:$index", "backpack:$index", "prestocks:$index", "robinhood:$index"),
+                targets.drop(index * 4).take(4).map { it.first.value })
         }
         assertTrue(targets.all { it.second == ChartRange.ONE_DAY })
         val priceTick = instruments.map { it.copy(stock = it.stock.copy(quote = StockQuote(BigDecimal.TEN, "USD"))) }
@@ -152,6 +196,48 @@ class MarketCatalogPerformanceTest {
         assertEquals(visible.toList(), combined.take(70))
         assertEquals((0 until 100).map { StockId("backed:$it") }.toSet(), combined)
         assertEquals(targets.map { it.first }.toSet(), marketWarmSubscriptionIds(emptySet(), targets))
+    }
+
+    @Test fun `receipt only ticks across the full catalog retain the complete rendered row list`() {
+        val cache = LiveMarketRowsCache()
+        val stocks = (0 until 2215).map { stock.copy(id = StockId("backed:$it")) }
+        val metadata = stocks.associate { it.id to instrument.copy(stock = it) }
+        val first = cache.select(stocks, metadata, emptySet(), emptySet())
+        val tick = metadata.mapValues { (_, row) -> row.copy(quoteReceivedAt = now.plusSeconds(1)) }
+        assertSame(first, cache.select(stocks, tick, emptySet(), emptySet()))
+    }
+
+    @Test fun `one live price and activity tick only replaces its row and keeps exact newest values`() {
+        val cache = LiveMarketRowsCache()
+        val stocks = (0 until 2215).map { stock.copy(id = StockId("backed:$it")) }
+        val first = cache.select(stocks, emptyMap(), emptySet(), emptySet())
+        val updated = stocks[15].copy(quote = stocks[15].quote.copy(price = BigDecimal.TEN),
+            activity = StockMarketActivity("USD", "Jupiter", "solana_token", BigDecimal("100"),
+                BigDecimal("-25"), now, now, null, null))
+        val next = cache.select(stocks.mapIndexed { index, row -> if (index == 15) updated else row },
+            emptyMap(), emptySet(), emptySet())
+        assertSame(updated, next[15].stock)
+        assertEquals(BigDecimal.TEN, next[15].stock.quote.price)
+        assertEquals(BigDecimal("100"), next[15].volume)
+        assertEquals(BigDecimal("-25"), next[15].netVolume)
+        assertEquals(1, first.indices.count { first[it] !== next[it] })
+    }
+
+    @Test fun `row reuse follows stable ids and preserves watch changes removals and ordering`() {
+        val cache = LiveMarketRowsCache()
+        val stocks = (0 until 3).map { stock.copy(id = StockId("backed:$it")) }
+        val first = cache.select(stocks, emptyMap(), emptySet(), emptySet())
+        val watched = cache.select(stocks, emptyMap(), setOf(stocks[1].id), emptySet())
+        assertTrue(watched[1].watched)
+        assertSame(first[0], watched[0])
+        assertSame(first[2], watched[2])
+        val reversed = cache.select(stocks.reversed(), emptyMap(), setOf(stocks[1].id), emptySet())
+        assertEquals(watched.reversed(), reversed)
+        assertTrue(reversed.indices.all { reversed[it] === watched[watched.lastIndex - it] })
+        cache.select(stocks.drop(1), emptyMap(), emptySet(), emptySet())
+        val restored = cache.select(stocks, emptyMap(), emptySet(), emptySet())
+        assertNotSame(first[0], restored[0])
+        assertFalse(restored[1].watched)
     }
 
     private fun expire(input: Stock, elapsed: Long): Stock =

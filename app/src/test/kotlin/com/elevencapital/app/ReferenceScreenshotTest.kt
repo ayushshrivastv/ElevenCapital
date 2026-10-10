@@ -29,7 +29,6 @@ import com.elevencapital.app.purchase.PurchasePaymentAsset
 import com.elevencapital.app.purchase.PurchaseOptions
 import com.elevencapital.app.purchase.PurchaseUiState
 import com.elevencapital.app.purchase.PurchasePhase
-import com.elevencapital.app.screens.DetailSection
 import com.elevencapital.app.screens.OrderPayReceiveCards
 import com.elevencapital.app.screens.PaymentAssetWheel
 import com.elevencapital.app.screens.PaymentTokenDropdown
@@ -83,9 +82,7 @@ class ReferenceScreenshotTest {
     fun stockOverview() = render("03_stock_overview") { openStock(fixtures.defaultStockId) }
 
     @Test
-    fun stockOrderBook() = renderDetail(
-        "04_stock_order_book", DetailSection.ORDER_BOOK, initialScrollOffset = 26,
-    )
+    fun stockAboutBelowChart() = renderDetail("04_stock_about")
 
     @Test
     fun stockPurchase() = render("06_stock_purchase") {
@@ -100,18 +97,18 @@ class ReferenceScreenshotTest {
     }
 
     @Test
-    fun signalDockOpensSignalAfterStockDetail() {
+    fun enabledDockTabsLeaveStockDetail() {
         val model = ElevenViewModel(RenderApplication(paparazzi.context), isLive = false)
-        model.openStock(model.fixtures.defaultStockId)
-
-        model.selectTab(RootTab.Trade)
-
-        assertEquals(RootTab.Trade, model.tab.value)
-        assertEquals(StockDestination.Markets, model.stockFlow.destination.value)
+        for (tab in RootTab.entries) {
+            model.openStock(model.fixtures.defaultStockId)
+            model.selectTab(tab)
+            assertEquals(tab, model.tab.value)
+            assertEquals(StockDestination.Markets, model.stockFlow.destination.value)
+        }
     }
 
     @Test
-    fun paymentAssetWheelShowsThreePlainRows() = capture("11_payment_chain_dropdown") {
+    fun paymentAssetWheelShowsSolanaRows() = capture("11_payment_chain_dropdown") {
         BoxWithConstraints(Modifier.fillMaxSize().background(P.Background)) {
             CompositionLocalProvider(LocalReferenceScale provides (maxWidth.value / 392f)) {
                 Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
@@ -127,14 +124,14 @@ class ReferenceScreenshotTest {
     }
 
     @Test
-    fun paymentTokenDropdownShowsOnlySelectedChainTokens() = capture("12_payment_token_dropdown") {
+    fun paymentTokenDropdownShowsOnlySolanaTokens() = capture("12_payment_token_dropdown") {
         BoxWithConstraints(Modifier.fillMaxSize().background(P.Background)) {
             CompositionLocalProvider(LocalReferenceScale provides (maxWidth.value / 392f)) {
                 Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
                     PaymentTokenDropdown(
                         assets = purchaseAssets(),
-                        network = PurchaseNetwork.BASE,
-                        selectedId = "BASE:USDC",
+                        network = PurchaseNetwork.SOLANA,
+                        selectedId = "SOLANA:USDC",
                         onBack = {},
                         onSelect = {},
                         modifier = Modifier.align(Alignment.TopCenter).padding(top = rd(350f)).width(rd(348f)),
@@ -183,7 +180,7 @@ class ReferenceScreenshotTest {
     private fun renderDollarComposer(expanded: Boolean) {
         val fixtures = FixtureStockData.load(paparazzi.context.assets)
         val stock = requireNotNull(fixtures.repository.getStock(fixtures.defaultStockId))
-        val asset = purchaseAssets().first { it.id == "ETHEREUM:ETH" }
+        val asset = purchaseAssets().first { it.id == "SOLANA:SOL" }
         val state = PurchaseUiState(
             stockId = stock.id.value,
             phase = PurchasePhase.ENTRY,
@@ -220,9 +217,6 @@ class ReferenceScreenshotTest {
 
     private fun renderDetail(
         name: String,
-        section: DetailSection,
-        initialScrollIndex: Int = 0,
-        initialScrollOffset: Int = 0,
     ) {
         val fixtures = FixtureStockData.load(paparazzi.context.assets)
         val stock = requireNotNull(fixtures.repository.getStock(fixtures.defaultStockId))
@@ -239,11 +233,7 @@ class ReferenceScreenshotTest {
                             isWatched = stock.id in fixtures.initialWatchedIds,
                             onWatch = {},
                             detail = fixtures.detail(stock.id),
-                            initialSection = section,
-                            listState = rememberLazyListState(
-                                initialFirstVisibleItemIndex = initialScrollIndex,
-                                initialFirstVisibleItemScrollOffset = initialScrollOffset,
-                            ),
+                            listState = rememberLazyListState(initialFirstVisibleItemIndex = 1),
                         )
                     }
                 }
@@ -263,16 +253,10 @@ class ReferenceScreenshotTest {
     }
 
     private fun purchaseAssets(): List<PurchasePaymentAsset> = listOf(
-        asset("ETHEREUM:ETH", "ETH", PurchaseNetwork.ETHEREUM, "2.00", "7000"),
-        asset("ETHEREUM:USDC", "USDC", PurchaseNetwork.ETHEREUM, "180", "180"),
-        asset("BASE:ETH", "ETH", PurchaseNetwork.BASE, "0.5", "1750"),
-        asset("BASE:USDC", "USDC", PurchaseNetwork.BASE, "92", "92"),
-        asset("ARBITRUM:ETH", "ETH", PurchaseNetwork.ARBITRUM, "0.25", "875"),
-        asset("ARBITRUM:USDC", "USDC", PurchaseNetwork.ARBITRUM, "64", "64"),
         asset("SOLANA:SOL", "SOL", PurchaseNetwork.SOLANA, "32", "4800"),
         asset("SOLANA:USDC", "USDC", PurchaseNetwork.SOLANA, "310", "310"),
         // Backend-disabled entries must stay out of the account dropdown and its available count.
-        asset("BASE:DAI", "DAI", PurchaseNetwork.BASE, "99", "99", enabled = false),
+        asset("SOLANA:BONK", "BONK", PurchaseNetwork.SOLANA, "99", "99", enabled = false),
     )
 
     private fun asset(
@@ -286,15 +270,13 @@ class ReferenceScreenshotTest {
         id = id,
         symbol = symbol,
         name = when (symbol) {
-            "ETH" -> "Ether"
             "SOL" -> "Solana"
-            "DAI" -> "Dai"
+            "BONK" -> "Bonk"
             else -> "USD Coin"
         },
         network = network,
-        address = if (network == PurchaseNetwork.SOLANA) "11111111111111111111111111111111"
-        else "0x0000000000000000000000000000000000000000",
-        decimals = if (symbol == "USDC") 6 else if (symbol == "SOL") 9 else 18,
+        address = "11111111111111111111111111111111",
+        decimals = if (symbol == "USDC") 6 else 9,
         balanceBaseUnits = BigInteger.ONE,
         balance = BigDecimal(balance),
         usdValue = BigDecimal(usdValue),

@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -20,7 +21,10 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -38,10 +42,10 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.elevencapital.app.R
-import coil3.compose.SubcomposeAsyncImage
-import coil3.compose.SubcomposeAsyncImageContent
+import coil3.compose.AsyncImage
 import com.elevencapital.core.stock.StockLogoReference
 import com.elevencapital.core.stock.Stock
+import java.util.concurrent.ConcurrentHashMap
 
 /** Raster-sampled colors from the original screenshots, not the Stitch palette. */
 object P {
@@ -52,6 +56,7 @@ object P {
     val Muted = Color(0xFF797A7F)
     val Lime = Color(0xFFADF47E)
     val Pink = Color(0xFFF37590)
+    val SellRed = Color(0xFFE34B55)
     val Amber = Color(0xFFE9A830)
 }
 
@@ -81,14 +86,15 @@ fun RefText(
 @Composable
 fun BrandLogo(modifier: Modifier = Modifier, alpha: Float = 1f, onLightBackground: Boolean = false) {
     Image(
-        painter = painterResource(if (onLightBackground) R.drawable.eleven_brand_logo_light else R.drawable.eleven_brand_logo),
+        painter = painterResource(R.drawable.eleven_in_app_logo),
         contentDescription = null,
         modifier = modifier.alpha(alpha),
         contentScale = ContentScale.Fit,
+        colorFilter = ColorFilter.tint(if (onLightBackground) Color.Black else Color.White),
     )
 }
 
-/** Retains the existing call sites while rendering the complete supplied Eleven logo. */
+/** Retains the existing call sites while rendering the current in-app Eleven logo. */
 @Composable
 fun SquareLogo(size: Float, alpha: Float = 1f) {
     BrandLogo(Modifier.size(rd(size)), alpha)
@@ -115,7 +121,40 @@ fun DrawScope.drawSolanaLogo() {
     bar(listOf(.29f to .65f, .79f to .65f, .69f to .77f, .19f to .77f))
 }
 
-/** Stocks and portfolio positions resolve the same bundled provider marks when available. */
+/** Product names in the issuer catalog can include a provider suffix. */
+internal fun stockCompanyName(stock: Stock): String =
+    if (stock.id.value.startsWith("robinhood:")) stock.name.substringBefore('•').trim().ifEmpty { stock.symbol }
+    else stock.name
+
+/** The reviewed featured issuer images contain its feather, rather than the underlying company mark. */
+internal fun robinhoodHasGenericIssuerLogo(stock: Stock, reference: String? = stock.logo?.value): Boolean {
+    if (!stock.id.value.startsWith("robinhood:")) return false
+    val deployment = stock.deployments.singleOrNull()?.takeIf { it.chainId == "4663" } ?: return false
+    if (stock.symbol !in com.elevencapital.app.data.RobinhoodFeaturedSymbols &&
+        robinhoodCompanyLogoFallback(stock) == null) return false
+    return reference == null || reference.equals(
+        "https://cdn.robinhood.com/ncw_assets/logos/${deployment.address.lowercase()}.png", ignoreCase = true)
+}
+
+/** Row prefetch and image rendering share the reviewed company fallback. */
+internal fun robinhoodUsesBundledCompanyLogo(stock: Stock, reference: String? = stock.logo?.value): Boolean =
+    stock.symbol in com.elevencapital.app.data.RobinhoodFeaturedSymbols &&
+        (robinhoodHasGenericIssuerLogo(stock, reference) ||
+            (robinhoodCompanyLogoFallback(stock)?.let { it == reference } == true))
+
+internal fun robinhoodRemoteLogo(stock: Stock, reference: String? = stock.logo?.value): String? = when {
+    robinhoodUsesBundledCompanyLogo(stock, reference) -> null
+    robinhoodHasGenericIssuerLogo(stock, reference) -> robinhoodCompanyLogoFallback(stock)
+    else -> reference
+}
+
+@Composable
+private fun stockArtworkPainter(resource: Int): Painter {
+    val bitmap = StockArtworkCache.bitmap(resource)
+    return if (bitmap != null) remember(bitmap) { BitmapPainter(bitmap) } else painterResource(resource)
+}
+
+/** Stocks and portfolio positions resolve the same supplied provider marks when available. */
 @Composable
 fun StockIcon(
     stock: Stock,
@@ -125,6 +164,10 @@ fun StockIcon(
 ) {
     val context = LocalContext.current
     val reference = logoReference?.value
+    val remoteReference = robinhoodRemoteLogo(stock, reference)
+    val remoteCompanyBackground = if (remoteReference != null && remoteReference == robinhoodCompanyLogoFallback(stock)) {
+        if (robinhoodCompanyLogoNeedsDarkBackground(stock)) P.Chip else Color.White
+    } else Color.Transparent
     // These are byte-for-byte copies of the catalog's logo URLs. Bundling them keeps the
     // market row, buy screen, and portfolio row identical when remote artwork is unavailable.
     val providerResource = when (stock.id.value) {
@@ -132,8 +175,25 @@ fun StockIcon(
         "backed:eba060bd-f7b3-49e3-8ef1-99869351b434" -> R.drawable.stock_spcxx_provider
         else -> 0
     }
-    val resource = remember(reference, providerResource) {
-        if (providerResource != 0) providerResource else if (reference?.startsWith("reference/") == true) {
+    val isRobinhood = stock.id.value.startsWith("robinhood:")
+    val companyResource = if (isRobinhood) StockArtworkCache.companyResource(stock.symbol) else 0
+    val robinhoodMarketsStock = (stock.symbol.equals("HOOD", ignoreCase = true) ||
+        stock.symbol.equals("HOODx", ignoreCase = true)) &&
+        stockCompanyName(stock).let { it.equals("Robinhood", ignoreCase = true) ||
+            it.startsWith("Robinhood Markets", ignoreCase = true) }
+    // The issuer currently supplies a generic mark. Reviewed company artwork is immediate;
+    // an issuer URL outside that known generic set can still supply its own company image.
+    val robinhoodResource = when {
+        // Official 2024 Robinhood favicon: https://robinhood.com/us/en/rh_favicon_152.png?v=2024
+        robinhoodMarketsStock -> R.drawable.stock_robinhood_company_hood
+        !isRobinhood -> 0
+        companyResource != 0 && robinhoodUsesBundledCompanyLogo(stock, reference) -> companyResource
+        reference?.startsWith("https://") != true -> companyResource.takeIf { it != 0 } ?: R.drawable.stock_robinhood_issuer
+        else -> 0
+    }
+    val resource = remember(reference, providerResource, robinhoodResource) {
+        if (providerResource != 0) providerResource else if (robinhoodResource != 0) robinhoodResource
+        else if (reference?.startsWith("reference/") == true) {
             val name = "stock_" + reference.removePrefix("reference/").replace('/', '_')
             context.resources.getIdentifier(name, "drawable", context.packageName)
         } else 0
@@ -144,38 +204,61 @@ fun StockIcon(
             RefText(mark, size * .32f, P.White, FontWeight.Bold)
         }
     }
+    @Composable fun LoadingMark() {
+        if (isRobinhood && companyResource != 0) Image(stockArtworkPainter(companyResource),
+            stockCompanyName(stock), Modifier.size(rd(size)).clip(CircleShape)
+                .background(if (stock.symbol in setOf("AMD", "TSM")) Color.White else Color.Transparent),
+            contentScale = ContentScale.Fit)
+        else Monogram()
+    }
     Box(modifier.size(rd(size)), contentAlignment = Alignment.Center) {
         if (resource != 0) {
-            val painter = painterResource(resource)
+            val painter = stockArtworkPainter(resource)
             // Oversized bundled table artwork includes a provider badge outside the
             // 84px company mark. Smaller standalone marks are displayed whole.
-            val extent = if (providerResource != 0 || reference?.endsWith("/detail") == true ||
+            val extent = if (providerResource != 0 || robinhoodResource != 0 || reference?.endsWith("/detail") == true ||
                 reference?.endsWith("/standalone") == true ||
                 painter.intrinsicSize.width <= 84f) 1f else
                 painter.intrinsicSize.width / 84f
             Box(Modifier.size(rd(size)).clip(CircleShape)
-                .background(if (providerResource != 0) Color.Black else Color.Transparent),
+                .background(when {
+                    providerResource != 0 -> Color.Black
+                    companyResource != 0 && robinhoodResource == companyResource && stock.symbol in setOf("AMD", "TSM") -> Color.White
+                    else -> Color.Transparent
+                }),
                 contentAlignment = Alignment.TopStart) {
-                Image(painter, stock.name,
+                Image(painter, stockCompanyName(stock),
                     Modifier.wrapContentSize(Alignment.TopStart, unbounded = true)
                         .size(rd(size * extent)),
-                    contentScale = ContentScale.FillBounds)
+                    contentScale = if (robinhoodResource != 0) ContentScale.Fit else ContentScale.FillBounds)
             }
-        } else if (reference?.startsWith("https://") == true) {
-            // Loading/error states use the monogram. A successful image replaces it,
-            // so transparent company artwork cannot reveal duplicate ticker letters.
-            SubcomposeAsyncImage(
-                model = reference,
-                contentDescription = stock.name,
-                modifier = Modifier.size(rd(size)).clip(CircleShape),
-                loading = { Monogram() },
-                error = { Monogram() },
-                success = { SubcomposeAsyncImageContent() },
-            )
+        } else if (remoteReference?.startsWith("https://") == true) {
+            // Ordinary image drawing avoids a separate subcomposition for every entering
+            // list row. The same company/offline mark remains underneath until success.
+            val showFallback = remember(remoteReference) { mutableStateOf(true) }
+            Box(Modifier.size(rd(size)).clip(CircleShape).background(remoteCompanyBackground)) {
+                if (showFallback.value) LoadingMark()
+                AsyncImage(
+                    model = remoteReference,
+                    contentDescription = stockCompanyName(stock),
+                    modifier = Modifier.size(rd(size)),
+                    contentScale = ContentScale.Fit,
+                    onLoading = { showFallback.value = true },
+                    onError = { showFallback.value = true },
+                    onSuccess = { showFallback.value = false },
+                )
+            }
         } else {
             Monogram()
         }
     }
+}
+
+// RefIcon uses a fixed set of source paths. Parse each geometry once rather than
+// allocating a parser and Path for every star/affordance on every scroll redraw.
+private val ReferenceIconPaths = ConcurrentHashMap<String, Path>()
+private fun referenceIconPath(description: String): Path = ReferenceIconPaths.computeIfAbsent(description) {
+    PathParser().parsePathString(it).toPath()
 }
 
 /** Small vector affordances use the reference geometry, without Material defaults. */
@@ -185,7 +268,7 @@ fun RefIcon(name: String, size: Float = 24f, color: Color = P.White, modifier: M
         scale(this.size.width / 24f, this.size.height / 24f, Offset.Zero) {
             val stroke = Stroke(1.8f, cap = StrokeCap.Round, join = StrokeJoin.Round)
             fun path(data: String, fill: Boolean = false, width: Float = 1.8f) {
-                drawPath(PathParser().parsePathString(data).toPath(), color,
+                drawPath(referenceIconPath(data), color,
                     style = if (fill) androidx.compose.ui.graphics.drawscope.Fill else
                         Stroke(width, cap = StrokeCap.Round, join = StrokeJoin.Round))
             }
@@ -252,6 +335,15 @@ fun RefIcon(name: String, size: Float = 24f, color: Color = P.White, modifier: M
                 "share" -> path("M8 5H5v16h14V5h-3 M12 15V2 M8 6l4-4 4 4")
                 "history" -> { path("M3 10a9 9 0 1 1 1 7 M3 3v7h7 M12 6v7l5 2") }
                 "globe" -> { drawCircle(color, 10f, Offset(12f,12f), style=stroke); path("M2 12h20 M12 2c-7 6-7 14 0 20 M12 2c7 6 7 14 0 20 M3 7.5c6 2 12 2 18 0 M3 16.5c6-2 12-2 18 0") }
+                "community" -> {
+                    // Three-person outline from the Community navigation reference.
+                    drawCircle(color, 3.7f, Offset(12f, 6.2f), style = Stroke(1.8f))
+                    drawCircle(color, 2.8f, Offset(5.3f, 8.2f), style = Stroke(1.8f))
+                    drawCircle(color, 2.8f, Offset(18.7f, 8.2f), style = Stroke(1.8f))
+                    path("M5.3 21c0-5 2.5-8 6.7-8s6.7 3 6.7 8", width = 1.8f)
+                    path("M1.5 18c0-3.8 1.7-6.2 4.5-6.2 1.6 0 2.9.7 3.7 1.8", width = 1.8f)
+                    path("M22.5 18c0-3.8-1.7-6.2-4.5-6.2-1.6 0-2.9.7-3.7 1.8", width = 1.8f)
+                }
                 "search" -> { path("M12 4A8 8 0 1 0 20 12 M18 18l4 4"); path("M18 1l1.5 4.5L24 7l-4.5 1.5L18 13l-1.5-4.5L12 7l4.5-1.5Z",true) }
                 "scan" -> { path("M4 8a8 8 0 0 1 4-4 M16 4a8 8 0 0 1 4 4 M20 16a8 8 0 0 1-4 4 M8 20a8 8 0 0 1-4-4 M2 12h20") }
                 "home", "homeFilled" -> {
@@ -265,7 +357,7 @@ fun RefIcon(name: String, size: Float = 24f, color: Color = P.White, modifier: M
                     path("M12 2C6 2 3 8 5 13l7 10 7-10C21 8 18 2 12 2Z", true)
                     val inner = Color(0xFF08090E)
                     drawLine(inner, Offset(12f,5f),Offset(12f,16f),1.6f)
-                    drawPath(PathParser().parsePathString("M15 7c-8-4-9 5-3 4 6-1 5 8-3 4").toPath(),inner,style=Stroke(1.4f))
+                    drawPath(referenceIconPath("M15 7c-8-4-9 5-3 4 6-1 5 8-3 4"),inner,style=Stroke(1.4f))
                 }
                 "backspace" -> { path("M9 4h13v16H9l-7-8Z",true); drawLine(P.Background,Offset(12f,8f),Offset(18f,16f),2f);drawLine(P.Background,Offset(18f,8f),Offset(12f,16f),2f) }
                 "downTriangle" -> path("M5 8h14l-7 8Z",true)

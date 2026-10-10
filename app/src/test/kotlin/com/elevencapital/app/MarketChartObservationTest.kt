@@ -67,4 +67,20 @@ class MarketChartObservationTest {
             points = emptyList()), row))
     }
 
+    @Test fun `Robinhood share history retains original prices without appending a token quote`() {
+        val robinhood = row.copy(provider = "robinhood", quoteBasis = "provider_indicative_token",
+            stock = row.stock.copy(id = StockId("robinhood:verified")))
+        val shareChart = chart.copy(stockId = robinhood.stock.id, basis = "underlying_share_reference")
+        assertTrue(isChartDisplayCompatible(shareChart, robinhood))
+        assertFalse(isChartBasisCompatible(shareChart, robinhood))
+        assertSame(shareChart, alignChartObservation(shareChart, robinhood))
+        assertFalse(isChartDisplayCompatible(shareChart.copy(currency = "USDC"), robinhood))
+        assertFalse(isChartDisplayCompatible(shareChart.copy(basis = "onchain_token_market"), robinhood))
+        assertFalse(isChartDisplayCompatible(shareChart.copy(stockId = StockId("robinhood:another")), robinhood))
+        val marketQuoted = robinhood.copy(quoteBasis = "onchain_token_market")
+        assertTrue(isChartDisplayCompatible(shareChart, marketQuoted))
+        assertFalse(isChartBasisCompatible(shareChart, marketQuoted))
+        assertSame(shareChart, alignChartObservation(shareChart, marketQuoted))
+    }
+
 }

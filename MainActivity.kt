@@ -1,17 +1,13 @@
 package com.elevencapital.app
 
-import android.app.Activity
 import android.app.KeyguardManager
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
-import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,19 +20,32 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.remember
-import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.elevencapital.app.auth.AppLockViewModel
 import com.elevencapital.app.auth.DeviceUnlockAttempt
 import com.elevencapital.app.auth.DeviceUnlockPhase
+import com.elevencapital.app.auth.DeviceCredentialFragment
+import com.elevencapital.app.auth.DeviceCredentialOwner
+import com.elevencapital.app.auth.DeviceCredentialResult
+import com.elevencapital.app.auth.DevicePromptWatchdog
+import com.elevencapital.app.auth.PendingCommunityTokenScanViewModel
+import com.elevencapital.app.auth.introDeadlineReached
 import com.elevencapital.app.auth.SocialLoginProvider
+import com.elevencapital.app.data.PredictionPythFeed
+import com.elevencapital.app.data.PredictionBtcFeed
 import com.elevencapital.app.ui.BrandIntro
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
-class MainActivity : FragmentActivity() {
+class MainActivity : FragmentActivity(), DeviceCredentialOwner {
     private companion object {
         // Reopening an Activity in the same process goes straight to the phone credential.
         var introPlayedInProcess = false
@@ -44,58 +53,46 @@ class MainActivity : FragmentActivity() {
 
     private val appLock: AppLockViewModel by viewModels()
     private val elevenModel: ElevenViewModel by viewModels()
-    private var activeUnlockAttempt: DeviceUnlockAttempt? = null
-    private lateinit var deviceCredentialPrompt: BiometricPrompt
+    private val pendingCommunityScan: PendingCommunityTokenScanViewModel by viewModels()
+    private var promptRecoveryJob: Job? = null
     private var introComplete by mutableStateOf(false)
     private var introFrameShown by mutableStateOf(false)
 
-    private val legacyCredentialLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        val attempt = activeUnlockAttempt ?: appLock.gate.activeAttempt()
-            ?: return@registerForActivityResult
-        activeUnlockAttempt = null
-        if (result.resultCode == Activity.RESULT_OK) {
-            appLock.gate.onAuthenticationSucceeded(attempt)
-        } else {
-            appLock.gate.onAuthenticationCancelled(attempt)
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Keep BTC market prices and wallet quotes warm across tabs.
+        if (BuildConfig.LIVE_MARKET_DATA) {
+            lifecycleScope.launch {
+                lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                    PredictionPythFeed.startForeground()
+                    PredictionBtcFeed.startForeground()
+                    try { awaitCancellation() } finally {
+                        PredictionBtcFeed.stopForeground()
+                        PredictionPythFeed.stopForeground()
+                    }
+                }
+            }
+        }
         introComplete = introPlayedInProcess
         introFrameShown = introComplete
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
-        deviceCredentialPrompt = BiometricPrompt(
-            this,
-            ContextCompat.getMainExecutor(this),
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    val attempt = activeUnlockAttempt ?: appLock.gate.activeAttempt() ?: return
-                    activeUnlockAttempt = null
-                    appLock.gate.onAuthenticationSucceeded(attempt)
-                }
-
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    val attempt = activeUnlockAttempt ?: appLock.gate.activeAttempt() ?: return
-                    activeUnlockAttempt = null
-                    if (errorCode == BiometricPrompt.ERROR_NO_DEVICE_CREDENTIAL) {
-                        appLock.gate.onDeviceCredentialUnavailable()
-                    } else {
-                        appLock.gate.onAuthenticationCancelled(attempt)
-                    }
-                }
-            },
-        )
+        val introStartedAt = SystemClock.elapsedRealtime()
+        lifecycleScope.launch {
+            delay(3_500)
+            if (!introComplete && introDeadlineReached(introStartedAt, SystemClock.elapsedRealtime())) {
+                // Keep the static opening artwork from trapping the user if frames stall.
+                introFrameShown = true
+                finishIntro()
+            }
+        }
         val application = application as ElevenCapitalApplication
         val auth = application.auth
         setContent {
             LaunchedEffect(Unit) {
-                // Let the first Compose frame display the pixel intro before fixture parsing.
+                // Prepare the locked app surface behind the static launcher artwork.
                 withFrameNanos { }
                 withFrameNanos { }
                 introFrameShown = true
@@ -118,9 +115,13 @@ class MainActivity : FragmentActivity() {
             // behind the lock instead of waiting until after the PIN is entered.
             val authState by auth.state.collectAsState()
             val deviceUnlockState by appLock.gate.state.collectAsStateWithLifecycle()
+            val pendingScan by pendingCommunityScan.pending.collectAsStateWithLifecycle()
             val verifiedUserId = authState.userId?.takeIf { authState.authenticated }
+            LaunchedEffect(verifiedUserId) {
+                if (verifiedUserId != null) pendingCommunityScan.discardOtherOwner(verifiedUserId)
+            }
             LaunchedEffect(verifiedUserId, introComplete, introFrameShown) {
-                appLock.gate.onSessionChanged(verifiedUserId)
+                syncLockToSession()
                 if (verifiedUserId != null && introComplete && introFrameShown) {
                     // The same Activity can return from Home without recomposing this effect.
                     // Observe every foreground transition so a cancelled PIN prompt is offered
@@ -135,6 +136,9 @@ class MainActivity : FragmentActivity() {
             val transferHistory = remember(historyRevision, verifiedHistoryUser) {
                 verifiedHistoryUser?.let(application.transferJournal::recordsForVerifiedUser).orEmpty()
             }
+            val confirmedTokenLaunches = remember(verifiedHistoryUser) {
+                verifiedHistoryUser?.let(application.tokenLaunchReceipts::receiptsForVerifiedUser).orEmpty()
+            }
             Box(Modifier.fillMaxSize().background(Color.Black)) {
                 if (introFrameShown) {
                     ElevenApp(
@@ -144,6 +148,7 @@ class MainActivity : FragmentActivity() {
                         authState = authState.takeIf { it.configured || BuildConfig.LIVE_MARKET_DATA },
                         deviceUnlockState = deviceUnlockState,
                         onUnlock = { requestDeviceUnlock(userRequested = true) },
+                        onRetrySessionRestore = auth::retrySessionRestore,
                         onOpenSecuritySettings = ::openDeviceSecuritySettings,
                         onSignIn = { auth.signIn(this@MainActivity, SocialLoginProvider.GOOGLE) },
                         onLogout = auth::logout,
@@ -157,14 +162,27 @@ class MainActivity : FragmentActivity() {
                             requireNotNull(application.transfers) { "Transfer backend is unavailable." }
                                 .status(prepared, submission)
                         },
+                        // Launch and creator-token Buy remain local UI flows in this APK.
+                        // Real execution code is retained behind the opt-in build property.
+                        confirmedTokenLaunches = confirmedTokenLaunches,
                         transferHistory = transferHistory,
                         transferHistoryStorageHealthy = application.transferJournal.storageHealthy,
+                        pendingCommunityTokenScan = pendingScan?.takeIf { scan ->
+                            scan.ownerUserId == verifiedUserId &&
+                                deviceUnlockState.phase == DeviceUnlockPhase.UNLOCKED &&
+                                deviceUnlockState.userId == verifiedUserId
+                        },
+                        onCommunityTokenScanned = { mint ->
+                            val owner = verifiedUserId
+                            // The verified account that opened the scanner owns this result.
+                            // Auth may be briefly restoring while Play services returns; delivery
+                            // still requires a verified matching account after device unlock.
+                            if (owner != null) pendingCommunityScan.offer(owner, mint)
+                        },
+                        onPendingCommunityTokenConsumed = { scan -> pendingCommunityScan.consume(scan) },
                     )
                 }
-                if (!introComplete) BrandIntro(onFinished = {
-                    introPlayedInProcess = true
-                    introComplete = true
-                })
+                if (!introComplete) BrandIntro(onFinished = ::finishIntro)
             }
         }
     }
@@ -186,21 +204,42 @@ class MainActivity : FragmentActivity() {
             appLock.gate.onDeviceCredentialAvailable()
         }
         if (introComplete && introFrameShown) requestDeviceUnlock()
+        appLock.gate.activeAttempt()?.let(::watchDevicePrompt)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && introComplete && introFrameShown) {
+            window.decorView.post { requestDeviceUnlock() }
+        }
     }
 
     override fun onStop() {
-        if (!isChangingConfigurations) appLock.gate.onAppBackgrounded()
+        if (!isChangingConfigurations) {
+            appLock.gate.onAppBackgrounded()
+        }
         super.onStop()
     }
 
     private fun syncLockToSession() {
         val authState = (application as ElevenCapitalApplication).auth.state.value
         appLock.gate.onSessionChanged(authState.userId?.takeIf { authState.authenticated })
+        val current = appLock.gate.activeAttempt()
+        supportFragmentManager.fragments.filterIsInstance<DeviceCredentialFragment>()
+            .filter { it.attempt != current }.forEach { retireDevicePrompt(it.attempt) }
+    }
+
+    private fun finishIntro() {
+        introPlayedInProcess = true
+        introComplete = true
+        if (introFrameShown) window.decorView.post { requestDeviceUnlock() }
     }
 
     private fun requestDeviceUnlock(userRequested: Boolean = false) {
-        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
+        if (!introComplete || !introFrameShown || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) ||
+            !window.decorView.hasWindowFocus() || supportFragmentManager.isStateSaved) return
         syncLockToSession()
+        if (appLock.gate.state.value.userId == null) return
         if (!isDeviceSecure()) {
             appLock.gate.onDeviceCredentialUnavailable()
             return
@@ -209,35 +248,56 @@ class MainActivity : FragmentActivity() {
             appLock.gate.onDeviceCredentialAvailable()
         }
         val attempt = appLock.gate.beginPrompt(userRequested) ?: return
-        activeUnlockAttempt = attempt
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val prompt = BiometricPrompt.PromptInfo.Builder()
-                    .setTitle("Unlock Eleven Capital")
-                    .setSubtitle("Use your phone PIN, pattern, or password")
-                    .setAllowedAuthenticators(DEVICE_CREDENTIAL)
-                    .build()
-                deviceCredentialPrompt.authenticate(prompt)
-            } else {
-                @Suppress("DEPRECATION")
-                val intent = getSystemService(KeyguardManager::class.java)
-                    .createConfirmDeviceCredentialIntent(
-                        "Unlock Eleven Capital",
-                        "Use your phone PIN, pattern, or password",
-                    )
-                if (intent == null) {
-                    activeUnlockAttempt = null
-                    appLock.gate.onDeviceCredentialUnavailable()
-                } else {
-                    legacyCredentialLauncher.launch(intent)
-                }
-            }
+            supportFragmentManager.beginTransaction()
+                .add(DeviceCredentialFragment.forAttempt(attempt), DeviceCredentialFragment.tag(attempt)).commitNow()
+            watchDevicePrompt(attempt)
         } catch (_: RuntimeException) {
-            activeUnlockAttempt = null
-            appLock.gate.onAuthenticationCancelled(
-                attempt,
-                "Phone security could not open. Tap the logo to try again.",
-            )
+            appLock.gate.onAuthenticationCancelled(attempt, "Phone security could not open. Try unlocking again.")
+            retireDevicePrompt(attempt)
+        }
+    }
+
+    override fun isCurrentDeviceAttempt(attempt: DeviceUnlockAttempt): Boolean {
+        syncLockToSession()
+        return appLock.gate.activeAttempt() == attempt
+    }
+
+    override fun onDeviceCredentialResult(attempt: DeviceUnlockAttempt, result: DeviceCredentialResult) {
+        if (!isCurrentDeviceAttempt(attempt)) { retireDevicePrompt(attempt); return }
+        when (result) {
+            DeviceCredentialResult.SUCCEEDED -> appLock.gate.onAuthenticationSucceeded(attempt)
+            DeviceCredentialResult.CANCELLED -> appLock.gate.onAuthenticationCancelled(attempt)
+            DeviceCredentialResult.UNAVAILABLE -> appLock.gate.onDeviceCredentialUnavailable()
+        }
+        promptRecoveryJob?.cancel()
+        retireDevicePrompt(attempt)
+    }
+
+    private fun watchDevicePrompt(attempt: DeviceUnlockAttempt) {
+        promptRecoveryJob?.cancel()
+        val fragment = supportFragmentManager.findFragmentByTag(DeviceCredentialFragment.tag(attempt)) as? DeviceCredentialFragment
+        val watchdog = DevicePromptWatchdog(fragment?.startedAtMillis ?: SystemClock.elapsedRealtime())
+        promptRecoveryJob = lifecycleScope.launch {
+            while (isActive && appLock.gate.activeAttempt() == attempt) {
+                val visible = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && window.decorView.hasWindowFocus()
+                if (watchdog.missingPrompt(SystemClock.elapsedRealtime(), visible)) {
+                    // Invalidate this exact attempt before platform cancellation can deliver a late result.
+                    appLock.gate.onAuthenticationCancelled(attempt, "Phone security did not open. Try unlocking again.")
+                    retireDevicePrompt(attempt)
+                    return@launch
+                }
+                delay(250)
+            }
+        }
+    }
+
+    private fun retireDevicePrompt(attempt: DeviceUnlockAttempt) {
+        val fragment = supportFragmentManager.findFragmentByTag(DeviceCredentialFragment.tag(attempt)) as? DeviceCredentialFragment ?: return
+        fragment.cancelPrompt()
+        // A prompt callback can arrive during a Fragment transaction or while state is saved.
+        window.decorView.post {
+            if (!isDestroyed && fragment.isAdded) supportFragmentManager.beginTransaction().remove(fragment).commitAllowingStateLoss()
         }
     }
 

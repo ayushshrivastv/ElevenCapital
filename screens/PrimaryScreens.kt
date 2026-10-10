@@ -1,49 +1,48 @@
 package com.elevencapital.app.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
@@ -57,10 +56,12 @@ import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import coil3.compose.AsyncImage
 import com.elevencapital.app.R
 import com.elevencapital.app.BuildConfig
 import com.elevencapital.app.data.PortfolioNetwork
 import com.elevencapital.app.data.LiveWalletTokenHolding
+import com.elevencapital.app.data.MeteoraMarketToken
 import com.elevencapital.app.data.WalletBalancePhase
 import com.elevencapital.app.ui.P
 import com.elevencapital.app.ui.RefIcon
@@ -95,28 +96,49 @@ data class PrimaryStockRow(
 )
 
 /** Quote fields are deliberately absent so a price tick cannot restart viewport/logo work. */
-private data class MarketAssetInterest(val id: StockId, val logoUrl: String?)
+internal data class MarketAssetInterest(val id: StockId, val logoUrl: String?)
 
-private class MarketAssetInterestCache {
+internal class MarketAssetInterestCache(private val logo: (Stock) -> String? = ::remoteMarketLogo) {
     private var previousRows: List<PrimaryStockRow>? = null
     private var assets: List<MarketAssetInterest> = emptyList()
 
     fun get(rows: List<PrimaryStockRow>): List<MarketAssetInterest> {
         if (rows === previousRows) return assets
-        if (rows.size != assets.size || rows.indices.any { index ->
-                rows[index].stock.id != assets[index].id || rows[index].stock.logo?.value != assets[index].logoUrl
+        val previous = previousRows
+        if (previous == null || rows.size != assets.size || rows.indices.any { index ->
+                !sameMarketArtwork(previous[index].stock, rows[index].stock)
             }) {
-            assets = rows.map { MarketAssetInterest(it.stock.id, it.stock.logo?.value) }
+            val next = rows.mapIndexed { index, row ->
+                val before = previous?.getOrNull(index)?.stock
+                if (before != null && sameMarketArtwork(before, row.stock)) assets[index]
+                else MarketAssetInterest(row.stock.id, logo(row.stock))
+            }
+            if (next != assets) assets = next
         }
         previousRows = rows
         return assets
     }
 }
 
+private fun sameMarketArtwork(before: Stock, after: Stock): Boolean =
+    before === after || (before.id == after.id && before.symbol == after.symbol &&
+        before.logo == after.logo && before.deployments == after.deployments)
+
+private fun remoteMarketLogo(stock: Stock): String? =
+    com.elevencapital.app.ui.robinhoodRemoteLogo(stock)
+
+/** Index zero is the controls header; the final spacer is outside the stock range. */
+internal fun marketVisibleStockRange(firstVisibleIndex: Int, lastVisibleIndex: Int, stockCount: Int): IntRange? {
+    val first = maxOf(0, firstVisibleIndex - 1)
+    val last = minOf(stockCount - 1, lastVisibleIndex - 1)
+    return if (stockCount > 0 && first <= last) first..last else null
+}
+
 /** Bounded per-screen lookahead history avoids resubmitting overlapping Coil requests on every row. */
 internal class MarketLogoPrefetchHistory(private val capacity: Int = 256) {
     private val requested = LinkedHashSet<String>()
 
+    @Synchronized
     fun shouldRequest(url: String): Boolean {
         if (!url.startsWith("https://") || !requested.add(url)) return false
         if (requested.size > capacity) {
@@ -147,8 +169,41 @@ fun MarketsScreen(
     watchlistOnly: Boolean = false,
     onQueryChange: (MarketQuery) -> Unit = {},
     onVisibleStockIds: (Set<StockId>) -> Unit = {},
+    meteoraTokens: List<MeteoraMarketToken> = emptyList(),
+    meteoraLoading: Boolean = false,
+    meteoraError: String? = null,
+    onMeteoraRetry: (() -> Unit)? = null,
+    onMeteoraSelect: () -> Unit = {},
+    onMeteoraVisibilityChange: (Boolean) -> Unit = {},
+    meteoraFilterRequestNonce: Int = 0,
+    onMeteoraToken: ((MeteoraMarketToken) -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
+    var meteoraSelected by rememberSaveable { mutableStateOf(false) }
+    var meteoraFilterOpen by remember { mutableStateOf(false) }
+    var handledMeteoraFilterRequest by remember { mutableStateOf(meteoraFilterRequestNonce) }
+    var meteoraSearch by rememberSaveable { mutableStateOf("") }
+    var meteoraMovementName by rememberSaveable { mutableStateOf(MarketMovement.ALL.name) }
+    var meteoraSortName by rememberSaveable { mutableStateOf(MarketSort.DEFAULT.name) }
+    val meteoraMovement = MarketMovement.valueOf(meteoraMovementName)
+    val meteoraSort = MarketSort.valueOf(meteoraSortName)
+    val meteoraFiltered = meteoraSearch.isNotBlank() || meteoraMovement != MarketMovement.ALL ||
+        meteoraSort != MarketSort.DEFAULT
+    val allFilterSelected = if (meteoraSelected) !meteoraFiltered else query.source == MarketSource.ALL
+    val displayedMeteoraTokens = remember(meteoraTokens, meteoraSearch, meteoraMovement, meteoraSort) {
+        selectMeteoraMarketTokens(meteoraTokens, meteoraSearch, meteoraMovement, meteoraSort)
+    }
+    // Saveable selection can be restored without a click after process recreation.
+    LaunchedEffect(meteoraSelected) {
+        onMeteoraVisibilityChange(meteoraSelected)
+        if (meteoraSelected) onMeteoraSelect()
+    }
+    LaunchedEffect(meteoraFilterRequestNonce) {
+        if (meteoraFilterRequestNonce != handledMeteoraFilterRequest) {
+            handledMeteoraFilterRequest = meteoraFilterRequestNonce
+            if (meteoraSelected) meteoraFilterOpen = true
+        }
+    }
     val context = LocalContext.current
     val visibleCallback by rememberUpdatedState(onVisibleStockIds)
     val rowSelector = remember { MarketRowSelector() }
@@ -156,36 +211,53 @@ fun MarketsScreen(
     val assetInterest = remember { MarketAssetInterestCache() }
     val displayedAssets = assetInterest.get(displayedRows)
     val prefetchedLogos = remember(context) { MarketLogoPrefetchHistory() }
+    val imageLoader = remember(context) { context.imageLoader }
     val displayedIds = remember(displayedAssets) { displayedAssets.map { it.id } }
-    LaunchedEffect(listState, displayedAssets) {
+    LaunchedEffect(listState, displayedAssets, meteoraSelected) {
+        if (meteoraSelected) {
+            visibleCallback(emptySet())
+            return@LaunchedEffect
+        }
+        var lastSubscription: Set<StockId>? = null
         snapshotFlow {
             val items = listState.layoutInfo.visibleItemsInfo
-            val ids = items.mapNotNull { item ->
-                (item.key as? String)?.takeIf { it.startsWith("stock:") }
-                    ?.removePrefix("stock:")?.let(::StockId)
-            }.toSet()
-            val lastStockIndex = items.lastOrNull { (it.key as? String)?.startsWith("stock:") == true }
-                ?.index?.minus(1)?.coerceAtLeast(0) ?: 0
-            ids to lastStockIndex
-        }.distinctUntilChanged().collect { (ids, lastStockIndex) ->
+            marketVisibleStockRange(items.firstOrNull()?.index ?: 0,
+                items.lastOrNull()?.index ?: -1, displayedIds.size)
+        }.distinctUntilChanged().collect { range ->
+            // Layout offsets change every animation frame. Build identities only when
+            // the actual visible stock range changes, using the existing catalog IDs.
+            val ids = range?.let { displayedIds.subList(it.first, it.last + 1).toSet() }.orEmpty()
             // Keep the actual first 20 filtered rows live as well as the current viewport.
             // This is derived after query/watchlist filtering, so no provider ordering is guessed.
-            visibleCallback(marketSubscriptionIds(displayedIds, ids))
+            val subscription = marketSubscriptionIds(displayedIds, ids)
+            if (subscription != lastSubscription) {
+                lastSubscription = subscription
+                visibleCallback(subscription)
+            }
             // One viewport of lookahead is enough to warm scrolling. Re-enqueuing an
             // overlapping 80-logo window used to create dozens of requests per row crossed.
-            val prefetchStart = (lastStockIndex + 1).coerceIn(0, displayedAssets.size)
+            val prefetchStart = ((range?.last ?: -1) + 1).coerceIn(0, displayedAssets.size)
             val prefetchEnd = minOf(displayedAssets.size, prefetchStart + 12)
-            for (index in prefetchStart until prefetchEnd) {
-                val url = displayedAssets[index].logoUrl ?: continue
-                if (prefetchedLogos.shouldRequest(url)) {
-                    context.imageLoader.enqueue(ImageRequest.Builder(context).data(url).size(128, 128).build())
+            withContext(Dispatchers.Default) {
+                for (index in prefetchStart until prefetchEnd) {
+                    val url = displayedAssets[index].logoUrl ?: continue
+                    if (prefetchedLogos.shouldRequest(url)) {
+                        imageLoader.enqueue(ImageRequest.Builder(context).data(url).size(128, 128).build())
+                    }
                 }
             }
         }
     }
-    DisposableEffect(Unit) { onDispose { visibleCallback(emptySet()) } }
+    DisposableEffect(Unit) {
+        onDispose {
+            visibleCallback(emptySet())
+            onMeteoraVisibilityChange(false)
+        }
+    }
     // Queries reset scroll position, whereas quote patches preserve the user's place.
-    LaunchedEffect(query, watchlistOnly) { listState.scrollToItem(0) }
+    LaunchedEffect(query, watchlistOnly, meteoraSelected, meteoraSearch, meteoraMovement, meteoraSort) {
+        listState.scrollToItem(0)
+    }
     Column(Modifier.fillMaxSize().background(W.Background)) {
         LazyColumn(
             state = listState,
@@ -193,41 +265,56 @@ fun MarketsScreen(
         ) {
             item(key = "market-controls", contentType = "controls") {
                 Column {
-                    Spacer(Modifier.height(rd(8f)))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        MarketSourceSelector(query.source) { source ->
-                            onQueryChange(query.copy(source = source))
+                        Box(Modifier.weight(1f)) {
+                            MarketSourceSelector(
+                                selectedSource = query.source,
+                                meteoraSelected = meteoraSelected,
+                                onSelectStock = { source ->
+                                    meteoraSelected = false
+                                    onQueryChange(query.copy(source = source))
+                                },
+                                onSelectMeteora = { meteoraSelected = true },
+                            )
                         }
-                        Spacer(Modifier.weight(1f))
+                        Spacer(Modifier.width(rd(8f)))
                         Row(
                             Modifier.height(rd(38f)).clip(CircleShape)
-                                .background(if (query.source == MarketSource.ALL) W.Cream else W.Circle)
-                                .clickable(role = Role.Button, onClick = onFilter)
-                                .semantics { contentDescription = "Search and filter stocks" }
+                                .background(if (allFilterSelected) W.Cream else W.Circle)
+                                .clickable(role = Role.Button) {
+                                    if (meteoraSelected) meteoraFilterOpen = true else onFilter()
+                                }
+                                .semantics { contentDescription = if (meteoraSelected)
+                                    "Search and filter tokens" else "Search and filter stocks" }
                                 .padding(horizontal = rd(13f)),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(rd(7f)),
                         ) {
-                            val color = if (query.source == MarketSource.ALL) W.Ink else W.White
-                            RefText(if (watchlistOnly || query.filtered || query.text.isNotBlank()) "Filters" else "All", 14f, color)
+                            val color = if (allFilterSelected) W.Ink else W.White
+                            RefText(if (meteoraSelected) {
+                                if (meteoraFiltered) "Filters" else "All"
+                            } else if (watchlistOnly || query.filtered || query.text.isNotBlank()) "Filters" else "All",
+                                14f, color)
                             RefIcon("chevronDown", 11f, color)
                         }
                     }
                     Spacer(Modifier.height(rd(14f)))
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    if (meteoraSelected) {
+                        MeteoraMarketHeader()
+                    } else Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         RefText("Stock", 15f, P.Muted, modifier = Modifier.weight(1f)
                             .semantics { contentDescription = "Sort stocks by name" }
                             .clickable(role = Role.Button) {
                                 onQueryChange(query.copy(sort = if (query.sort == MarketSort.NAME_ASC) MarketSort.NAME_DESC else MarketSort.NAME_ASC))
                             })
-                        Box(Modifier.width(rd(82f)).semantics { contentDescription = "Sort stocks by price" }
+                        Box(Modifier.width(rd(104f)).semantics { contentDescription = "Sort stocks by price" }
                             .clickable(role = Role.Button) {
                                 onQueryChange(query.copy(sort = if (query.sort == MarketSort.PRICE_DESC) MarketSort.PRICE_ASC else MarketSort.PRICE_DESC))
                             }, contentAlignment = Alignment.CenterEnd) {
                             RefText("Price/Δ%", 15f, P.Muted)
                         }
                         Row(
-                            Modifier.width(rd(88f)).semantics { contentDescription = "Sort stocks by 24-hour volume" }
+                            Modifier.width(rd(82f)).semantics { contentDescription = "Sort stocks by 24-hour volume" }
                                 .clickable(role = Role.Button) {
                                     onQueryChange(query.copy(sort = if (query.sort == MarketSort.VOLUME_DESC) MarketSort.VOLUME_ASC else MarketSort.VOLUME_DESC))
                                 },
@@ -244,31 +331,51 @@ fun MarketsScreen(
                     Spacer(Modifier.height(rd(9f)))
                 }
             }
-            items(displayedRows, key = { "stock:${it.stock.id.value}" }, contentType = { "stock" }) { item ->
-                PrimaryMarketRow(item, onStock, onWatch)
-            }
-            val emptyMessage = when {
-                displayedRows.isNotEmpty() -> null
-                rows.isEmpty() -> statusMessage?.takeIf(String::isNotBlank)
-                    ?: if (statusMessage == null) "No stocks available" else null
-                watchlistOnly && query == MarketQuery() -> "No stocks in your watchlist"
-                else -> "No matching stocks"
-            }
-            if (emptyMessage != null) {
-                item(key = "empty", contentType = "message") {
-                    Column(
-                        Modifier.fillMaxWidth().padding(vertical = rd(20f)),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        RefText(emptyMessage, 15f, P.Muted, maxLines = 3)
-                        if (rows.isEmpty() && onRetry != null) {
-                            Spacer(Modifier.height(rd(8f)))
-                            Box(
-                                Modifier.clip(CircleShape).background(P.Card)
-                                    .clickable(role = Role.Button, onClick = onRetry)
-                                    .padding(horizontal = rd(16f), vertical = rd(10f)),
-                            ) {
-                                RefText("Retry", 14f)
+            if (meteoraSelected) {
+                if (meteoraError != null || meteoraLoading || meteoraTokens.isEmpty()) {
+                    item(key = "meteora-status", contentType = "message") {
+                        MeteoraMarketStatus(meteoraTokens.isEmpty(), meteoraLoading, meteoraError, onMeteoraRetry)
+                    }
+                }
+                if (meteoraTokens.isNotEmpty() && displayedMeteoraTokens.isEmpty()) {
+                    item(key = "meteora-no-match", contentType = "message") {
+                        MeteoraMarketNoMatches {
+                            meteoraSearch = ""
+                            meteoraMovementName = MarketMovement.ALL.name
+                            meteoraSortName = MarketSort.DEFAULT.name
+                        }
+                    }
+                }
+                items(displayedMeteoraTokens, key = { "meteora:${it.mintAddress}:${it.poolAddress}" }, contentType = { "meteora" }) { token ->
+                    MeteoraMarketTokenRow(token, onMeteoraToken)
+                }
+            } else {
+                items(displayedRows, key = { "stock:${it.stock.id.value}" }, contentType = { "stock" }) { item ->
+                    PrimaryMarketRow(item, onStock, onWatch)
+                }
+                val emptyMessage = when {
+                    displayedRows.isNotEmpty() -> null
+                    rows.isEmpty() -> statusMessage?.takeIf(String::isNotBlank)
+                        ?: if (statusMessage == null) "No stocks available" else null
+                    watchlistOnly && query == MarketQuery() -> "No stocks in your watchlist"
+                    else -> "No matching stocks"
+                }
+                if (emptyMessage != null) {
+                    item(key = "empty", contentType = "message") {
+                        Column(
+                            Modifier.fillMaxWidth().padding(vertical = rd(20f)),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            RefText(emptyMessage, 15f, P.Muted, maxLines = 3)
+                            if (rows.isEmpty() && onRetry != null) {
+                                Spacer(Modifier.height(rd(8f)))
+                                Box(
+                                    Modifier.clip(CircleShape).background(P.Card)
+                                        .clickable(role = Role.Button, onClick = onRetry)
+                                        .padding(horizontal = rd(16f), vertical = rd(10f)),
+                                ) {
+                                    RefText("Retry", 14f)
+                                }
                             }
                         }
                     }
@@ -277,13 +384,33 @@ fun MarketsScreen(
             item(key = "dock-space", contentType = "spacer") { Spacer(Modifier.height(rd(116f))) }
         }
     }
+    if (meteoraFilterOpen) MeteoraMarketControlsDialog(
+        search = meteoraSearch,
+        onSearchChange = { meteoraSearch = it },
+        movement = meteoraMovement,
+        onMovementChange = { meteoraMovementName = it.name },
+        sort = meteoraSort,
+        onSortChange = { meteoraSortName = it.name },
+        onReset = {
+            meteoraSearch = ""
+            meteoraMovementName = MarketMovement.ALL.name
+            meteoraSortName = MarketSort.DEFAULT.name
+        },
+        onDismiss = { meteoraFilterOpen = false },
+    )
 }
 
 /** Mirrors the home dock at a smaller size; the source query also drives the All filter dialog. */
 @Composable
-private fun MarketSourceSelector(selectedSource: MarketSource, onSelect: (MarketSource) -> Unit) {
+private fun MarketSourceSelector(
+    selectedSource: MarketSource,
+    meteoraSelected: Boolean,
+    onSelectStock: (MarketSource) -> Unit,
+    onSelectMeteora: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Row(
-        Modifier.clip(CircleShape).background(W.Panel).padding(rd(4f)),
+        modifier.horizontalScroll(rememberScrollState()).stockGlass(CircleShape, W.Panel).padding(rd(4f)),
         horizontalArrangement = Arrangement.spacedBy(rd(5f)),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -291,12 +418,13 @@ private fun MarketSourceSelector(selectedSource: MarketSource, onSelect: (Market
             MarketSource.BACKPACK to R.drawable.market_source_backpack,
             MarketSource.BACKED to R.drawable.market_source_backed,
             MarketSource.PRESTOCKS to R.drawable.market_source_prestocks,
+            MarketSource.ROBINHOOD to R.drawable.market_source_robinhood,
         ).forEach { (source, artwork) ->
-            val active = selectedSource == source
+            val active = !meteoraSelected && selectedSource == source
             Box(
                 Modifier.size(rd(42f)).clip(CircleShape)
                     .background(if (active) W.Cream else W.Circle)
-                    .clickable(role = Role.Tab) { onSelect(source) }
+                    .clickable(role = Role.Tab) { onSelectStock(source) }
                     .semantics {
                         contentDescription = "${source.label} stocks"
                         selected = active
@@ -309,6 +437,22 @@ private fun MarketSourceSelector(selectedSource: MarketSource, onSelect: (Market
                     contentScale = ContentScale.Fit,
                 )
             }
+        }
+        Box(
+            Modifier.size(rd(42f)).clip(CircleShape)
+                .background(if (meteoraSelected) W.Cream else W.Circle)
+                .clickable(role = Role.Tab, onClick = onSelectMeteora)
+                .semantics {
+                    contentDescription = "Meteora"
+                    selected = meteoraSelected
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(
+                painter = painterResource(R.drawable.market_source_meteora), contentDescription = null,
+                modifier = Modifier.size(rd(34f)).clip(CircleShape),
+                contentScale = ContentScale.Fit,
+            )
         }
     }
 }
@@ -323,11 +467,14 @@ fun AccountScreen(
     onPreviewSpcxxOpenTransaction: () -> Unit = {},
     onPreviewSpcxxRemove: () -> Unit = {},
     previewHoldings: List<PreviewStockHolding> = emptyList(),
-    onPreviewOpenTransaction: (PreviewStockHolding) -> Unit = {},
+    previewCommunityTokens: List<CommunityScannedTokenPurchase> = emptyList(),
+    onPreviewCommunityToken: (String) -> Unit = {},
+    onPreviewOpenTransaction: ((PreviewStockHolding) -> Unit)? = null,
     onPreviewRemoveAll: () -> Unit = {},
     previewSolBalance: BigDecimal? = null,
     previewSolValueUsd: BigDecimal? = null,
-    onPreviewSolRemove: () -> Unit = {},
+    previewUsdcBalance: BigDecimal? = null,
+    onPreviewTokenRemove: () -> Unit = {},
     devnetSol: BigDecimal? = null,
     onToken: (LiveWalletTokenHolding) -> Unit = {},
     onDevnetSol: () -> Unit = {},
@@ -343,35 +490,39 @@ fun AccountScreen(
     val duplicateSymbols = ownedTokens.groupingBy { it.symbol.uppercase(Locale.US) }.eachCount()
     val visibleDevnetSol = devnetSol?.takeIf { it.signum() > 0 }
     val visiblePreviewSol = previewSolBalance?.takeIf { BuildConfig.DEBUG && it.signum() > 0 }
+    val visiblePreviewUsdc = previewUsdcBalance?.takeIf { BuildConfig.DEBUG && it.signum() > 0 }
     val previewSpcxx = previewSpcxxHolding?.takeIf {
         BuildConfig.DEBUG && it.stock.id.value == "backed:eba060bd-f7b3-49e3-8ef1-99869351b434" &&
             it.quantity.signum() > 0 && it.valueUsd.signum() > 0
     }
-    val visiblePreviewHoldings = if (BuildConfig.DEBUG) {
-        (previewHoldings + listOfNotNull(previewSpcxx))
-            .filter { it.quantity.signum() > 0 && it.valueUsd.signum() > 0 }
-            .distinctBy { it.stock.id.value }
-    } else emptyList()
-    Column(Modifier.fillMaxSize().background(W.Background)) {
-        Spacer(Modifier.height(rd(if (compactTopSpacing) 6f else 32f)))
-        Box(Modifier.fillMaxWidth().padding(horizontal = rd(26f))) {
-            PortfolioBalanceCard(balance, balancePlaceholder)
-        }
-        Spacer(Modifier.height(rd(26f)))
-        LazyColumn(
-            Modifier.fillMaxWidth().weight(1f)
-                .clip(RoundedCornerShape(topStart = rd(30f), topEnd = rd(30f)))
-                .background(W.Panel),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                start = rd(26f), end = rd(26f), top = rd(22f), bottom = rd(112f)),
-        ) {
-            item(key = "tokens-heading") {
+    val visiblePreviewHoldings = if (BuildConfig.DEBUG) previewHoldings
+        .filter { it.quantity.signum() > 0 && it.valueUsd.signum() > 0 }
+    else emptyList()
+    val visiblePreviewCommunityTokens = if (BuildConfig.DEBUG) visibleCommunityTokenPurchases(
+        previewCommunityTokens, ownedTokens.mapTo(HashSet()) { it.assetId },
+    )
+    else emptyList()
+    LazyColumn(
+        Modifier.fillMaxSize().background(W.Panel),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = rd(112f)),
+    ) {
+        item(key = "tokens-heading") {
+            Column(
+                Modifier.fillMaxWidth().background(W.Background)
+                    .clip(RoundedCornerShape(topStart = rd(30f), topEnd = rd(30f)))
+                    .background(W.Panel)
+                    .padding(start = rd(26f), end = rd(26f), top = rd(22f)),
+            ) {
                 RefText("Tokens", 20f, W.White, FontWeight.Medium)
                 Spacer(Modifier.height(rd(12f)))
             }
-            if (ownedTokens.isEmpty() && visibleDevnetSol == null && visiblePreviewSol == null &&
-                visiblePreviewHoldings.isEmpty()) {
-                item(key = "tokens-empty") {
+        }
+        if (ownedTokens.isEmpty() && visibleDevnetSol == null && visiblePreviewSol == null &&
+            visiblePreviewUsdc == null &&
+            visiblePreviewHoldings.isEmpty() && visiblePreviewCommunityTokens.isEmpty() &&
+            previewSpcxx == null) {
+            item(key = "tokens-empty") {
+                Column(Modifier.fillMaxWidth().background(W.Panel).padding(horizontal = rd(26f))) {
                     val emptyText = when {
                         !walletConnected -> "Connect a wallet to see your tokens"
                         portfolioPhase == WalletBalancePhase.LOADING -> null
@@ -381,45 +532,86 @@ fun AccountScreen(
                     if (emptyText != null) RefText(emptyText, 14f, W.Muted)
                     Spacer(Modifier.height(rd(14f)))
                 }
-            } else {
-                items(ownedTokens, key = { "token:${it.chain}:${it.assetId}" }) { token ->
+            }
+        } else {
+            items(ownedTokens, key = { "token:${it.chain}:${it.assetId}" }) { token ->
+                Column(Modifier.fillMaxWidth().background(W.Panel).padding(horizontal = rd(26f))) {
                     PortfolioTokenRow(token, duplicateSymbols.getValue(token.symbol.uppercase(Locale.US)) > 1, onToken)
                 }
             }
-            if (visibleDevnetSol != null) {
-                item(key = "devnet-sol") { PortfolioDevnetSolRow(visibleDevnetSol, onDevnetSol) }
+        }
+        if (visibleDevnetSol != null) {
+            item(key = "devnet-sol") {
+                Column(Modifier.fillMaxWidth().background(W.Panel).padding(horizontal = rd(26f))) {
+                    PortfolioDevnetSolRow(visibleDevnetSol, onDevnetSol)
+                }
             }
-            if (visiblePreviewSol != null) {
-                item(key = "preview-sol") {
-                    PortfolioPreviewSolRow(
-                        visiblePreviewSol,
-                        previewSolValueUsd ?: BigDecimal.ZERO,
-                        onPreviewSolRemove,
+        }
+        if (visiblePreviewSol != null) {
+            item(key = "sol-balance") {
+                Column(Modifier.fillMaxWidth().background(W.Panel).padding(horizontal = rd(26f))) {
+                    PortfolioSolanaTokenRow(
+                        symbol = "SOL",
+                        quantity = visiblePreviewSol,
+                        valueUsd = previewSolValueUsd ?: BigDecimal.ZERO,
+                        onRemove = onPreviewTokenRemove,
                     )
                 }
             }
-            items(visiblePreviewHoldings, key = { "local:${it.stock.id.value}" }) { holding ->
-                PortfolioPreviewStockRow(
-                    holding = holding,
-                    onOpenTransaction = {
-                        if (holding.stock.id.value == "backed:eba060bd-f7b3-49e3-8ef1-99869351b434" &&
-                            previewHoldings.none { it.stock.id == holding.stock.id }) {
-                            onPreviewSpcxxOpenTransaction()
-                        } else onPreviewOpenTransaction(holding)
-                    },
-                    onRemove = {
-                        if (previewHoldings.isEmpty()) onPreviewSpcxxRemove()
-                        else onPreviewRemoveAll()
-                    },
+        }
+        if (visiblePreviewUsdc != null) {
+            item(key = "usdc-solana-balance") {
+                Column(Modifier.fillMaxWidth().background(W.Panel).padding(horizontal = rd(26f))) {
+                    PortfolioSolanaTokenRow(
+                        symbol = "USDC",
+                        quantity = visiblePreviewUsdc,
+                        valueUsd = visiblePreviewUsdc,
+                        onRemove = onPreviewTokenRemove,
+                    )
+                }
+            }
+        }
+        items(visiblePreviewCommunityTokens, key = { "local-token:${it.mintAddress}" }) { token ->
+            Column(Modifier.fillMaxWidth().background(W.Panel).padding(horizontal = rd(26f))) {
+                PortfolioCommunityTokenRow(
+                    token = token,
+                    onOpen = { onPreviewCommunityToken(token.mintAddress) },
+                    onRemove = onPreviewTokenRemove,
                 )
             }
-            if (ownedHoldings.isNotEmpty()) {
-                item(key = "stocks-heading") {
+        }
+        items(visiblePreviewHoldings, key = { "local:${it.stock.id.value}" }) { holding ->
+            Column(Modifier.fillMaxWidth().background(W.Panel).padding(horizontal = rd(26f))) {
+                PortfolioPreviewStockRow(
+                    holding = holding,
+                    onOpenTransaction = onPreviewOpenTransaction
+                        ?.takeIf { isRobinhoodTeslaPreviewStock(holding.stock) }
+                        ?.let { action -> { action(holding) } },
+                    onRemove = onPreviewRemoveAll,
+                )
+            }
+        }
+        if (previewSpcxx != null) {
+            item(key = "legacy:spcxx") {
+                Column(Modifier.fillMaxWidth().background(W.Panel).padding(horizontal = rd(26f))) {
+                    PortfolioPreviewStockRow(
+                        holding = previewSpcxx,
+                        onOpenTransaction = onPreviewSpcxxOpenTransaction,
+                        onRemove = onPreviewSpcxxRemove,
+                    )
+                }
+            }
+        }
+        if (ownedHoldings.isNotEmpty()) {
+            item(key = "stocks-heading") {
+                Column(Modifier.fillMaxWidth().background(W.Panel).padding(horizontal = rd(26f))) {
                     Spacer(Modifier.height(rd(24f)))
                     RefText("Stocks", 20f, W.White, FontWeight.Medium)
                     Spacer(Modifier.height(rd(12f)))
                 }
-                items(ownedHoldings, key = { "holding:${it.stock.id.value}" }) { holding ->
+            }
+            items(ownedHoldings, key = { "holding:${it.stock.id.value}" }) { holding ->
+                Column(Modifier.fillMaxWidth().background(W.Panel).padding(horizontal = rd(26f))) {
                     PortfolioStockRow(holding, onStock)
                 }
             }
@@ -427,69 +619,76 @@ fun AccountScreen(
     }
 }
 
+/** A completed QR Buy may not have a local quantity; only an explicit zero holding is hidden. */
+internal fun visibleCommunityTokenPurchases(
+    purchases: List<CommunityScannedTokenPurchase>,
+    realTokenIds: Set<String> = emptySet(),
+): List<CommunityScannedTokenPurchase> = purchases.filter { purchase ->
+    (purchase.receivedTokens == null || purchase.receivedTokens.signum() > 0) &&
+        "SOLANA:${purchase.mintAddress}" !in realTokenIds
+}
+
+internal fun portfolioCommunityTokenSymbol(purchase: CommunityScannedTokenPurchase): String =
+    if (purchase.mintAddress == tokenLaunchUiPreviewResult().mintAddress)
+        TOKEN_LAUNCH_UI_PREVIEW_SYMBOL
+    else purchase.symbol?.takeIf(String::isNotBlank)
+        ?: "${purchase.mintAddress.take(4)}...${purchase.mintAddress.takeLast(4)}"
+
 @Composable
-private fun PortfolioBalanceCard(balance: BigDecimal?, placeholder: String) {
-    val amount = balance?.let { primaryBalance(it) } ?: placeholder
-    val amountSize = when {
-        balance == null -> 32f
-        amount.length > 13 -> 22f
-        amount.length > 11 -> 26f
-        amount.length > 9 -> 30f
-        else -> 36f
-    }
-    val holderShape = RoundedCornerShape(rd(28f))
-    BoxWithConstraints(
-        Modifier.fillMaxWidth().aspectRatio(1.08f)
-            .clip(holderShape)
-            .background(Color(0xFF080808))
-            .border(rd(3f), Color(0xFF252525), holderShape),
-    ) {
-        val inset = maxWidth * 0.045f
-        Box(
-            Modifier.fillMaxWidth().padding(horizontal = inset).padding(top = inset)
-                .height(maxWidth * 0.49f)
-                .clip(RoundedCornerShape(topStart = rd(23f), topEnd = rd(23f)))
-                .background(Brush.linearGradient(listOf(
-                    Color(0xFFFFD9AE), Color(0xFFFF9B77), Color(0xFFEA70C9),
-                ))),
-        )
-        Box(
-            Modifier.fillMaxWidth().fillMaxHeight(0.66f).align(Alignment.BottomCenter)
-                .drawBehind {
-                    val shoulder = size.height * 0.13f
-                    val front = Path().apply {
-                        moveTo(0f, shoulder)
-                        lineTo(size.width * 0.16f, shoulder)
-                        cubicTo(size.width * 0.21f, shoulder, size.width * 0.22f, 0f,
-                            size.width * 0.29f, 0f)
-                        lineTo(size.width * 0.68f, 0f)
-                        cubicTo(size.width * 0.75f, 0f, size.width * 0.76f, shoulder,
-                            size.width * 0.82f, shoulder)
-                        lineTo(size.width, shoulder)
-                        lineTo(size.width, size.height)
-                        lineTo(0f, size.height)
-                        close()
-                    }
-                    drawPath(front, Brush.verticalGradient(listOf(Color(0xFF222222), Color(0xFF101010))))
-                    drawPath(front, Color.White.copy(alpha = 0.045f), style = Stroke(width = 2f))
-                },
-        ) {
-            Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                .padding(start = rd(25f), end = rd(22f), bottom = rd(25f)),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    RefText(amount, amountSize, W.White, FontWeight.Medium,
-                        modifier = Modifier.semantics {
-                            contentDescription = balance?.let { "Total portfolio balance ${it.toPlainString()} US dollars" }
-                                ?: "Total portfolio balance $placeholder"
-                        })
-                    Spacer(Modifier.height(rd(3f)))
-                    RefText("Balance", 13f, W.Muted)
-                }
-                Spacer(Modifier.width(rd(10f)))
-                RefText("Eleven Capital", 12f, W.White, FontWeight.Medium)
+private fun PortfolioCommunityTokenRow(
+    token: CommunityScannedTokenPurchase,
+    onOpen: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val symbol = portfolioCommunityTokenSymbol(token)
+    val quantity = token.receivedTokens
+    val valueUsd = if (token.mintAddress == tokenLaunchUiPreviewResult().mintAddress)
+        spxtrPreviewHoldingMarketValueUsd(quantity) else null
+    val valueDecimals = if (valueUsd != null && valueUsd.signum() > 0 &&
+        valueUsd < BigDecimal("0.01")) 4 else 2
+    val currentOpen by rememberUpdatedState(onOpen)
+    val currentRemove by rememberUpdatedState(onRemove)
+    Row(
+        Modifier.fillMaxWidth().height(rd(77f))
+            .pointerInput(token.mintAddress) {
+                detectPreviewRowPress(onTap = { currentOpen() }, onHold = { currentRemove() })
             }
+            .semantics {
+                contentDescription = "$symbol on Solana" +
+                    (quantity?.let { ", ${portfolioTokenQuantity(it)} tokens" } ?: ", amount unavailable") +
+                    (valueUsd?.let { ", $" + primaryDecimal(it, 2, 2) } ?: "")
+                onClick(label = "Open $symbol token") { currentOpen(); true }
+                onLongClick(label = "Clear local UI-flow data") { currentRemove(); true }
+            },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(rd(46f)).clip(CircleShape).background(Color.Black),
+            contentAlignment = Alignment.Center) {
+            if (token.mintAddress == tokenLaunchUiPreviewResult().mintAddress) {
+                Image(
+                    painterResource(R.drawable.token_spxtr_christmas), contentDescription = null,
+                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
+                )
+            } else if (token.imageUrl != null) {
+                AsyncImage(
+                    model = token.imageUrl, contentDescription = null,
+                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
+                )
+            } else PortfolioTokenIcon(symbol)
+        }
+        Spacer(Modifier.width(rd(12f)))
+        Column(Modifier.weight(1f)) {
+            RefText(symbol, 18f, W.White, FontWeight.Medium)
+            Spacer(Modifier.height(rd(3f)))
+            RefText("Solana", 13f, W.Muted)
+        }
+        Spacer(Modifier.width(rd(10f)))
+        Column(horizontalAlignment = Alignment.End) {
+            RefText(valueUsd?.let { "$" + primaryDecimal(it, valueDecimals, valueDecimals) } ?: "—",
+                18f, W.White)
+            Spacer(Modifier.height(rd(3f)))
+            RefText(quantity?.let { "${portfolioTokenQuantity(it)} $symbol" } ?: "Amount unavailable",
+                13f, W.Muted)
         }
     }
 }
@@ -501,13 +700,9 @@ private fun PortfolioTokenRow(
     onToken: (LiveWalletTokenHolding) -> Unit,
 ) {
     val symbol = token.symbol.ifBlank { "Token" }
-    val network = when (token.chain) {
-        PortfolioNetwork.SOLANA -> "Solana"
-        PortfolioNetwork.ETHEREUM -> "Ethereum"
-        PortfolioNetwork.ARBITRUM -> "Arbitrum"
-    }
-    val clickModifier = if (token.chain == PortfolioNetwork.SOLANA) Modifier.clickable(role = Role.Button) { onToken(token) }
-        .semantics { contentDescription = "Open $symbol on Solscan" } else Modifier
+    val network = "Solana"
+    val clickModifier = Modifier.clickable(role = Role.Button) { onToken(token) }
+        .semantics { contentDescription = "Open $symbol on Solscan" }
     Row(Modifier.fillMaxWidth().height(rd(77f)).then(clickModifier), verticalAlignment = Alignment.CenterVertically) {
         PortfolioTokenIcon(symbol)
         Spacer(Modifier.width(rd(12f)))
@@ -553,7 +748,8 @@ private fun PortfolioDevnetSolRow(quantity: BigDecimal, onClick: () -> Unit) {
 }
 
 @Composable
-private fun PortfolioPreviewSolRow(
+private fun PortfolioSolanaTokenRow(
+    symbol: String,
     quantity: BigDecimal,
     valueUsd: BigDecimal,
     onRemove: () -> Unit,
@@ -565,23 +761,20 @@ private fun PortfolioPreviewSolRow(
                 detectPreviewRowPress(onTap = null, onHold = { currentRemove() })
             }
             .semantics {
-                contentDescription = "Preview SOL, ${portfolioTokenQuantity(quantity)}, ${primaryBalance(valueUsd)}"
-                onLongClick(label = "Remove local SOL preview from this device") {
+                contentDescription = "$symbol on Solana, ${portfolioTokenQuantity(quantity)}, ${primaryBalance(valueUsd)}"
+                onLongClick(label = "Clear local UI-flow data") {
                     onRemove()
                     true
                 }
             },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PortfolioTokenIcon("SOL")
+        PortfolioTokenIcon(symbol)
         Spacer(Modifier.width(rd(12f)))
         Column(Modifier.weight(1f)) {
-            RefText("SOL", 18f, W.White, FontWeight.Medium)
+            RefText(symbol, 18f, W.White, FontWeight.Medium)
             Spacer(Modifier.height(rd(3f)))
-            val unitPrice = valueUsd.takeIf { it.signum() > 0 }
-                ?.divide(quantity, 8, RoundingMode.HALF_UP)
-                ?.let(::portfolioUnitPrice)
-            RefText(unitPrice ?: "Solana", 13f, W.Muted)
+            RefText("Solana", 13f, W.Muted)
         }
         Spacer(Modifier.width(rd(10f)))
         Column(horizontalAlignment = Alignment.End) {
@@ -592,21 +785,23 @@ private fun PortfolioPreviewSolRow(
     }
 }
 
-private suspend fun PointerInputScope.detectPreviewRowPress(
+internal const val PREVIEW_ROW_HOLD_MILLIS = 4_000L
+
+internal suspend fun PointerInputScope.detectPreviewRowPress(
     onTap: (() -> Unit)?,
     onHold: () -> Unit,
 ) {
     awaitEachGesture {
-        // Observe before the list's scroll detector consumes motion. A small amount of finger
-        // drift keeps the hold alive; a deliberate swipe remains available for scrolling.
+        // Watch after scroll handling so a consumed drag can never clear local state.
         val down = awaitFirstDown(requireUnconsumed = false)
-        val maxHoldDrift = viewConfiguration.touchSlop * 3f
+        val maxHoldDrift = viewConfiguration.touchSlop
         var cancelled = false
-        val endedBeforeHold = withTimeoutOrNull(4_000L) {
+        val endedBeforeHold = withTimeoutOrNull(PREVIEW_ROW_HOLD_MILLIS) {
             while (true) {
-                val changes = awaitPointerEvent(PointerEventPass.Initial).changes
+                val changes = awaitPointerEvent(PointerEventPass.Final).changes
                 val change = changes.firstOrNull { it.id == down.id }
                 if (change == null || changes.any { it.id != down.id && it.pressed } ||
+                    change.isConsumed ||
                     (change.position - down.position).getDistance() > maxHoldDrift) {
                     cancelled = true
                     break
@@ -625,26 +820,35 @@ private suspend fun PointerInputScope.detectPreviewRowPress(
 @Composable
 private fun PortfolioPreviewStockRow(
     holding: PreviewStockHolding,
-    onOpenTransaction: () -> Unit,
+    onOpenTransaction: (() -> Unit)?,
     onRemove: () -> Unit,
 ) {
     val currentOpenTransaction by rememberUpdatedState(onOpenTransaction)
     val currentRemove by rememberUpdatedState(onRemove)
+    val provider = portfolioStockProvider(holding.stock)
     Row(
         Modifier.fillMaxWidth().height(rd(77f))
             .pointerInput(Unit) {
                 detectPreviewRowPress(
-                    onTap = { currentOpenTransaction() },
+                    onTap = { currentOpenTransaction?.invoke() },
                     onHold = { currentRemove() },
                 )
             }
             .semantics {
-                contentDescription = "${holding.stock.symbol}, ${portfolioTokenQuantity(holding.quantity)}, ${primaryBalance(holding.valueUsd)}"
-                onClick(label = "Open reference transaction on Solscan") {
-                    onOpenTransaction()
-                    true
+                contentDescription = listOfNotNull(
+                    holding.stock.symbol,
+                    provider,
+                    portfolioTokenQuantity(holding.quantity),
+                    primaryBalance(holding.valueUsd),
+                ).joinToString(", ")
+                if (onOpenTransaction != null) {
+                    onClick(label = if (isRobinhoodTeslaPreviewStock(holding.stock))
+                        "Open Robinhood transaction" else "Open Solscan") {
+                        onOpenTransaction()
+                        true
+                    }
                 }
-                onLongClick(label = "Remove local positions from this device") {
+                onLongClick(label = "Clear local UI-flow data") {
                     onRemove()
                     true
                 }
@@ -656,14 +860,8 @@ private fun PortfolioPreviewStockRow(
         Column(Modifier.weight(1f)) {
             RefText(holding.stock.symbol, 18f, W.White, FontWeight.Medium)
             Spacer(Modifier.height(rd(3f)))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val quote = holding.stock.quote
-                val quoteLabel = quote.price?.let { primaryQuotedValue(it, quote.currencyCode, true) }
-                RefText(quoteLabel ?: "Solana", 13f, W.Muted)
-                quote.changePercent?.let { change ->
-                    Spacer(Modifier.width(rd(8f)))
-                    RefText(primaryChange(change), 13f, primaryChangeColor(change))
-                }
+            if (provider != null) {
+                RefText(provider, 13f, W.Muted)
             }
         }
         Spacer(Modifier.width(rd(10f)))
@@ -696,6 +894,7 @@ private fun PortfolioTokenIcon(symbol: String) {
 
 @Composable
 private fun PortfolioStockRow(item: PrimaryStockRow, onStock: (StockId) -> Unit) {
+    val provider = portfolioStockProvider(item.stock)
     Row(Modifier.fillMaxWidth().height(rd(77f))
         .clickable(role = Role.Button) { onStock(item.stock.id) },
         verticalAlignment = Alignment.CenterVertically) {
@@ -704,13 +903,8 @@ private fun PortfolioStockRow(item: PrimaryStockRow, onStock: (StockId) -> Unit)
         Column(Modifier.weight(1f)) {
             RefText(item.stock.symbol, 18f, W.White, FontWeight.Medium)
             Spacer(Modifier.height(rd(3f)))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                RefText(item.stock.quote.price?.let { primaryQuotedValue(it, item.stock.quote.currencyCode, true) }
-                    ?: item.stock.name, 13f, W.Muted)
-                item.stock.quote.changePercent?.let { change ->
-                    Spacer(Modifier.width(rd(7f)))
-                    RefText(primaryChange(change), 12f, primaryChangeColor(change))
-                }
+            if (provider != null) {
+                RefText(provider, 13f, W.Muted)
             }
         }
         Spacer(Modifier.width(rd(10f)))
@@ -721,6 +915,14 @@ private fun PortfolioStockRow(item: PrimaryStockRow, onStock: (StockId) -> Unit)
             RefText(item.quantity?.let(::portfolioQuantity) ?: "—", 13f, W.Muted)
         }
     }
+}
+
+internal fun portfolioStockProvider(stock: Stock): String? = when (stock.id.value.substringBefore(':')) {
+    "backed" -> "Backed Finance"
+    "backpack" -> "Backpack Securities"
+    "prestocks" -> "PreStocks"
+    "robinhood" -> "Robinhood"
+    else -> null
 }
 
 private fun portfolioUnitPrice(price: BigDecimal): String {
@@ -795,6 +997,8 @@ private fun PrimaryMarketRow(
     onWatch: (StockId) -> Unit,
 ) {
     val stock = item.stock
+    val isRobinhood = stock.id.value.startsWith("robinhood:")
+    val missingValue = if (isRobinhood) "N/A" else "—"
     val quote = stock.quote
     val activity = stock.activity
     val isLive = activity != null || stock.statistics?.reference != null
@@ -804,18 +1008,22 @@ private fun PrimaryMarketRow(
     val net = if (activity != null) activity.netVolume24h else item.netVolume
     // Provider timestamps change even when displayed amounts do not. Keep formatting tied
     // to actual values, and keep quote changes out of the image subcomposition entirely.
-    val priceLabel = remember(quote.price, quote.currencyCode) { primaryQuote(stock) }
-    val changeLabel = remember(quote.changePercent) { primaryChange(quote.changePercent) }
-    val volumeLabel = remember(volume, currency, showCurrency) {
-        volume?.let { primaryCompactMoney(it, currency, showCurrency) } ?: "—"
+    val priceLabel = remember(quote.price, quote.currencyCode, isRobinhood) {
+        if (isRobinhood) quote.price?.let(::portfolioUnitPrice) ?: missingValue else primaryQuote(stock)
     }
-    val netLabel = remember(net, currency, showCurrency, isLive) {
+    val changeLabel = remember(quote.changePercent, isRobinhood) {
+        quote.changePercent?.let { primaryChange(it) } ?: missingValue
+    }
+    val volumeLabel = remember(volume, currency, showCurrency, isRobinhood) {
+        volume?.let { primaryCompactMoney(it, currency, showCurrency) } ?: missingValue
+    }
+    val netLabel = remember(net, currency, showCurrency, isLive, isRobinhood) {
         net?.let {
             if (isLive) primarySignedCompactMoney(it, currency, showCurrency)
             else primaryCompactMoney(it, currency, showCurrency)
-        } ?: "—"
+        } ?: missingValue
     }
-    val artworkStock = remember(stock.id, stock.symbol, stock.name, stock.logo) { stock }
+    val artworkStock = remember(stock.id, stock.symbol, stock.name, stock.logo, stock.deployments) { stock }
     Row(
         Modifier.fillMaxWidth().height(rd(70f))
             .clickable(role = Role.Button) { onStock(item.stock.id) },
@@ -823,27 +1031,39 @@ private fun PrimaryMarketRow(
     ) {
         PrimaryStar(item, onWatch, 19f)
         Spacer(Modifier.width(rd(10f)))
-        StockIcon(artworkStock, 44f)
+        if (isRobinhood) {
+            Image(
+                painter = painterResource(R.drawable.stock_robinhood_company_hood),
+                contentDescription = "Robinhood",
+                modifier = Modifier.size(rd(44f)).clip(CircleShape),
+                contentScale = ContentScale.Fit,
+            )
+        } else {
+            StockIcon(artworkStock, 44f)
+        }
         Spacer(Modifier.width(rd(12f)))
         Column(Modifier.weight(1f)) {
             PrimarySymbol(item, 18f)
             RefText(primaryUnitLabel(item.stock, item.ageLabel ?: "—"), 15f, P.Muted)
         }
-        Column(Modifier.width(rd(82f)).semantics {
+        Column(Modifier.width(rd(104f)).semantics {
             if (isLive) contentDescription = "Price: " + (item.stock.quote.price?.let {
                 "${it.toPlainString()} ${item.stock.quote.currencyCode}"
+            } ?: "Not available") + ". Daily change: " + (quote.changePercent?.let {
+                "${it.toPlainString()} percent"
             } ?: "Not available")
         }, horizontalAlignment = Alignment.End) {
             RefText(priceLabel, 18f)
             RefText(changeLabel, 16f, primaryChangeColor(quote.changePercent))
         }
-        Column(Modifier.width(rd(88f)).semantics {
+        Column(Modifier.width(rd(82f)).semantics {
             if (activity != null) {
                 val fullVolume = activity.volume24h?.let { "${it.toPlainString()} ${activity.currencyCode}" }
                     ?: "Not available. ${activity.volumeReason}"
                 val fullNet = activity.netVolume24h?.let { "${it.toPlainString()} ${activity.currencyCode}" }
                     ?: "Not available. ${activity.netVolumeReason}"
-                contentDescription = "24-hour volume: $fullVolume. Net buy volume: $fullNet. Source: ${activity.source}."
+                contentDescription = "24-hour volume: $fullVolume. Net buy volume: $fullNet." +
+                    if (isRobinhood) "" else " Source: ${activity.source}."
             }
         }, horizontalAlignment = Alignment.End) {
             RefText(volumeLabel, 18f)
@@ -896,6 +1116,12 @@ private fun PrimaryHoldingRow(item: PrimaryStockRow, onStock: (StockId) -> Unit)
 private fun PrimarySymbol(item: PrimaryStockRow, size: Float) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         RefText(item.stock.symbol, size, modifier = Modifier.weight(1f, fill = false))
+        if (item.stock.id.value.startsWith("robinhood:") && item.ageLabel?.contains("cached") == true) {
+            Spacer(Modifier.width(rd(4f)))
+            RefIcon("history", 12f, P.Muted, Modifier.semantics {
+                contentDescription = "Saved price; updates automatically when connected"
+            })
+        }
         if (item.verified) {
             Spacer(Modifier.width(rd(4f)))
             RefIcon("verified", 16f, P.Lime)
@@ -915,11 +1141,17 @@ private fun PrimaryStar(item: PrimaryStockRow, onWatch: (StockId) -> Unit, size:
     }
 }
 
+// Formatters are mutable. Give each render thread its own small set of the fixed
+// precisions used below instead of constructing locale data on each entering row.
+private val PrimaryDecimalFormatters = ThreadLocal.withInitial { HashMap<Int, DecimalFormat>() }
+
 private fun primaryDecimal(value: BigDecimal, maximumDecimals: Int = 2, minimumDecimals: Int = 0): String =
-    DecimalFormat("#,##0", DecimalFormatSymbols.getInstance(Locale.US)).apply {
-        minimumFractionDigits = minimumDecimals
-        maximumFractionDigits = maximumDecimals
-        roundingMode = RoundingMode.HALF_UP
+    requireNotNull(PrimaryDecimalFormatters.get()).getOrPut(maximumDecimals * 16 + minimumDecimals) {
+        DecimalFormat("#,##0", DecimalFormatSymbols.getInstance(Locale.US)).apply {
+            minimumFractionDigits = minimumDecimals
+            maximumFractionDigits = maximumDecimals
+            roundingMode = RoundingMode.HALF_UP
+        }
     }.format(value)
 
 private fun primaryCurrency(currencyCode: String): String = if (currencyCode == "USD") "$" else "$currencyCode "
@@ -944,7 +1176,7 @@ private fun primaryChangeColor(value: BigDecimal?): Color = when {
 }
 
 private fun primaryUnitLabel(stock: Stock, label: String): String =
-    if (stock.quote.currencyCode == "USDC" && !label.contains("USDC")) "USDC · $label" else label
+    portfolioStockProvider(stock) ?: label
 
 private fun primaryQuote(stock: Stock, includeNativeUnit: Boolean = false): String {
     val price = stock.quote.price ?: return "—"

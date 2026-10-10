@@ -8,6 +8,16 @@ import org.junit.Test
 
 class MarketSubscriptionIdsTest {
     @Test
+    fun `viewport excludes the header and bottom dock spacer without constructing identities`() {
+        assertEquals(null, marketVisibleStockRange(0, 0, 100))
+        assertEquals(0..7, marketVisibleStockRange(0, 8, 100))
+        assertEquals(26..35, marketVisibleStockRange(27, 36, 100))
+        assertEquals(92..99, marketVisibleStockRange(93, 101, 100))
+        assertEquals(null, marketVisibleStockRange(101, 101, 100))
+        assertEquals(null, marketVisibleStockRange(0, 0, 0))
+    }
+
+    @Test
     fun `filtered first twenty and visible rows are subscribed together`() {
         val displayed = (0 until 40).map { StockId("stock-$it") }
         val visible = linkedSetOf(StockId("stock-27"), StockId("stock-28"))

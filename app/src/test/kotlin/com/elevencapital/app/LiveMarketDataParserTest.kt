@@ -106,6 +106,106 @@ class LiveMarketDataParserTest {
     }
 
     @Test
+    fun `Robinhood token keeps exact chain contract and indicative USD reference`() {
+        val parsed = LiveMarketDataParser.catalog(robinhoodCatalog()).instruments.single()
+        assertEquals("robinhood", parsed.provider)
+        assertEquals("Robinhood Stock Tokens", parsed.providerLabel)
+        assertEquals("provider_indicative_token", parsed.quoteBasis)
+        assertEquals("USD", parsed.stock.quote.currencyCode)
+        assertEquals("Robinhood", parsed.stock.activity?.source)
+        assertEquals("robinhood_chain_token", parsed.stock.activity?.scope)
+        assertNull(parsed.stock.activity?.volume24h)
+        assertNull(parsed.stock.activity?.netVolume24h)
+        assertEquals("Robinhood Chain", parsed.stock.deployments.single().network)
+        assertEquals("4663", parsed.stock.deployments.single().chainId)
+        assertEquals(18, parsed.stock.deployments.single().decimals)
+        assertEquals(ROBINHOOD_CONTRACT, parsed.stock.deployments.single().address)
+        assertEquals("robinhood_chain", parsed.stock.statistics?.reference?.network)
+        assertEquals(ROBINHOOD_CONTRACT, parsed.stock.statistics?.reference?.mint)
+    }
+
+    @Test
+    fun `Robinhood pool quote pairs with actual USD percentage and directional token volume`() {
+        val source = robinhoodCatalog()
+        val stock = row(source)
+        stock.getJSONObject("quote").put("basis", "onchain_token_market")
+            .put("price", "510.519496673896").put("changePercent", "-0.793")
+        stock.put("activity", JSONObject("""{
+            "currency":"USD", "source":"GeckoTerminal", "scope":"robinhood_chain_token",
+            "volume24h":"480262.21627722", "netVolume24h":"-65146.288885142",
+            "receivedAt":"2026-09-18T12:00:00Z", "updatedAt":null,
+            "volumeReason":null, "netVolumeReason":null
+        }"""))
+        val parsed = LiveMarketDataParser.catalog(source).instruments.single()
+        assertEquals("onchain_token_market", parsed.quoteBasis)
+        assertEquals(BigDecimal("-0.793"), parsed.stock.quote.changePercent)
+        assertEquals(BigDecimal("480262.21627722"), parsed.stock.activity?.volume24h)
+        assertEquals(BigDecimal("-65146.288885142"), parsed.stock.activity?.netVolume24h)
+        assertNull(parsed.stock.robinhoodReference)
+
+        stock.getJSONObject("activity").put("source", "Robinhood")
+        assertThrows(IllegalArgumentException::class.java) { LiveMarketDataParser.catalog(source) }
+        stock.getJSONObject("activity").put("source", "GeckoTerminal")
+        stock.getJSONObject("quote").put("basis", "provider_indicative_token")
+        assertEquals("GeckoTerminal", LiveMarketDataParser.catalog(source).instruments.single().stock.activity?.source)
+    }
+
+    @Test
+    fun `fresh issuer quote and original share reference preserve independent Gecko token activity`() {
+        val source = robinhoodReferenceCatalog()
+        val item = row(source)
+        item.put("activity", JSONObject("""{
+            "currency":"USD", "source":"GeckoTerminal", "scope":"robinhood_chain_token",
+            "volume24h":"480262.21627722", "netVolume24h":"-65146.288885142",
+            "receivedAt":"2026-09-18T11:59:30Z", "updatedAt":null,
+            "volumeReason":null, "netVolumeReason":null
+        }"""))
+        val parsed = LiveMarketDataParser.catalog(source).instruments.single()
+        assertEquals("provider_indicative_token", parsed.quoteBasis)
+        assertEquals(BigDecimal("100.55025"), parsed.stock.quote.price)
+        assertEquals(Instant.parse("2026-09-18T12:00:00Z"), parsed.quoteReceivedAt)
+        assertEquals(Instant.parse("2026-09-18T12:00:00Z"), parsed.stock.robinhoodReference?.receivedAt)
+        assertEquals(Instant.parse("2026-09-18T11:59:30Z"), parsed.stock.activity?.receivedAt)
+        assertEquals(BigDecimal("480262.21627722"), parsed.stock.activity?.volume24h)
+        assertEquals(BigDecimal("-65146.288885142"), parsed.stock.activity?.netVolume24h)
+        for ((key, value) in listOf("source" to "Jupiter", "scope" to "solana_token", "currency" to "USDC")) {
+            val invalid = JSONObject(source.toString())
+            row(invalid).getJSONObject("activity").put(key, value)
+            assertThrows(IllegalArgumentException::class.java) { LiveMarketDataParser.catalog(invalid) }
+        }
+        val wrongChain = JSONObject(source.toString())
+        row(wrongChain).getJSONArray("deployments").getJSONObject(0).put("chainId", 1)
+        assertThrows(IllegalArgumentException::class.java) { LiveMarketDataParser.catalog(wrongChain) }
+    }
+
+    @Test
+    fun `Robinhood contract cannot use a different chain mint or Solana activity`() {
+        for ((key, value) in listOf("network" to "Ethereum", "address" to "invalid",
+            "chainId" to "42161", "chainId" to "1", "chainId" to JSONObject.NULL,
+            "decimals" to JSONObject.NULL, "decimals" to -1, "decimals" to 37, "decimals" to 18.5)) {
+            val source = robinhoodCatalog()
+            row(source).getJSONArray("deployments").getJSONObject(0).put(key, value)
+            assertThrows(IllegalArgumentException::class.java) { LiveMarketDataParser.catalog(source) }
+        }
+        val mismatch = robinhoodCatalog()
+        row(mismatch).getJSONObject("statistics").put("mint", "0x" + "2".repeat(40))
+        assertThrows(IllegalArgumentException::class.java) { LiveMarketDataParser.catalog(mismatch) }
+        val wrongActivity = robinhoodCatalog()
+        row(wrongActivity).put("activity", row(catalog()).getJSONObject("activity"))
+        assertThrows(IllegalArgumentException::class.java) { LiveMarketDataParser.catalog(wrongActivity) }
+        val executablePrice = robinhoodCatalog()
+        row(executablePrice).getJSONObject("trading").put("enabled", true)
+        assertThrows(IllegalArgumentException::class.java) { LiveMarketDataParser.catalog(executablePrice) }
+    }
+
+    @Test
+    fun `issuer supported precision is retained without assuming every token has eighteen decimals`() {
+        val source = robinhoodCatalog()
+        row(source).getJSONArray("deployments").getJSONObject(0).put("decimals", 6)
+        assertEquals(6, LiveMarketDataParser.catalog(source).instruments.single().stock.deployments.single().decimals)
+    }
+
+    @Test
     fun `provider information links must use HTTPS and legacy rows may omit them`() {
         assertNull(LiveMarketDataParser.catalog(catalog()).instruments.single().stock.informationUrl)
 
@@ -280,12 +380,80 @@ class LiveMarketDataParserTest {
         }"""))
     }
 
+    @Test
+    fun `Robinhood original share data preserves its units ratio and source timestamps`() {
+        val source = robinhoodReferenceCatalog()
+        val stock = LiveMarketDataParser.catalog(source).instruments.single().stock
+        val reference = requireNotNull(stock.robinhoodReference)
+        assertEquals(BigDecimal("100"), reference.bid)
+        assertEquals(BigDecimal("101"), reference.ask)
+        assertEquals(BigDecimal("1.0005"), reference.currentMultiplier)
+        assertEquals(BigDecimal("100.55025"), stock.quote.price)
+        assertEquals(BigDecimal("4000000"), reference.dailyTradingVolume)
+        assertNull(stock.activity?.volume24h)
+        assertEquals(stock.quote.asOf, reference.asOf)
+        assertEquals(Instant.parse("2026-09-18T12:00:00Z"), reference.receivedAt)
+    }
+
+    @Test
+    fun `Robinhood share data rejects wrong units mismatched ratios and invalid values`() {
+        val mutations = listOf<(JSONObject) -> Unit>(
+            { it.put("currency", "USDC") }, { it.put("basis", "onchain_token_market") },
+            { it.put("volumeUnit", "USD") }, { it.put("currentMultiplier", "2") },
+            { it.put("ask", "99") }, { it.put("dailyTradingVolume", "-1") },
+            { it.put("dailyLow", "103") }, { it.put("tokenDecimals", 37) }, { it.put("tokenDecimals", 17) },
+            { it.put("tokenDecimals", 18.5) }, { it.put("tokenDecimals", "18") },
+            { it.put("asOf", "2026-09-18T11:59:58Z") },
+            { it.put("receivedAt", "2026-09-18T12:00:01Z") },
+        )
+        for (mutate in mutations) {
+            val source = robinhoodReferenceCatalog()
+            mutate(row(source).getJSONObject("robinhoodReference"))
+            assertThrows(IllegalArgumentException::class.java) { LiveMarketDataParser.catalog(source) }
+        }
+    }
+
+    private fun robinhoodReferenceCatalog(): JSONObject = robinhoodCatalog().also { source ->
+        val item = row(source)
+        item.getJSONObject("quote").put("price", "100.55025")
+            .put("asOf", "2026-09-18T11:59:59Z")
+        item.put("robinhoodReference", JSONObject("""{
+            "basis":"underlying_share_reference", "currency":"USD",
+            "bid":"100", "ask":"101", "dailyHigh":"102", "dailyLow":"99",
+            "dailyTradingVolume":"4000000", "volumeUnit":"underlying_shares",
+            "currentMultiplier":"1.0005", "tokenDecimals":18,
+            "asOf":"2026-09-18T11:59:59Z", "receivedAt":"2026-09-18T12:00:00Z",
+            "isTradingHalt":false
+        }"""))
+    }
+
     private fun row(source: JSONObject) = source.getJSONArray("stocks").getJSONObject(0)
+
+    private fun robinhoodCatalog(): JSONObject = catalog().also { source ->
+        val item = row(source)
+        item.put("id", "robinhood:MSFT").put("provider", "robinhood").put("providerAssetId", "MSFT")
+            .put("providerLabel", "Robinhood Stock Tokens").put("symbol", "MSFT").put("name", "Microsoft Stock Token")
+            .put("deployments", org.json.JSONArray().put(JSONObject().put("network", "Robinhood Chain")
+                .put("address", ROBINHOOD_CONTRACT).put("chainId", 4663).put("decimals", 18)))
+        item.getJSONObject("quote").put("currencyBasis", "quoted_currency")
+        item.getJSONObject("statistics").put("scope", "robinhood_chain_token")
+            .put("network", "robinhood_chain").put("mint", ROBINHOOD_CONTRACT)
+        item.put("activity", JSONObject("""{
+            "currency":"USD", "source":"Robinhood", "scope":"robinhood_chain_token",
+            "volume24h":null, "netVolume24h":null, "receivedAt":null, "updatedAt":null,
+            "volumeReason":"Robinhood price feed does not report token volume.",
+            "netVolumeReason":"Robinhood price feed does not report buy/sell flow."
+        }"""))
+    }
+
+    private companion object {
+        const val ROBINHOOD_CONTRACT = "0x1111111111111111111111111111111111111111"
+    }
 
     private fun catalog() = JSONObject("""{
         "schemaVersion":1, "mode":"live-read-only", "receivedAt":"2026-09-18T12:00:00Z",
         "providers":[{"id":"backed","status":"ok"},{"id":"backpack","status":"ok"},
-            {"id":"prestocks","status":"ok"}],
+            {"id":"prestocks","status":"ok"},{"id":"robinhood","status":"ok"}],
         "stocks":[{
             "id":"backed:example-msft", "provider":"backed", "providerAssetId":"example-msft",
             "providerLabel":"Backed xStocks", "symbol":"MSFTx", "name":"Microsoft xStock", "logoUrl":null,

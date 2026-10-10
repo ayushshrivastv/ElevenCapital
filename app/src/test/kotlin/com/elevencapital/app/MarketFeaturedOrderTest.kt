@@ -7,6 +7,7 @@ import com.elevencapital.app.screens.MarketSort
 import com.elevencapital.app.screens.MarketSource
 import com.elevencapital.app.screens.PrimaryStockRow
 import com.elevencapital.app.screens.selectMarketRows
+import com.elevencapital.app.data.RobinhoodFeaturedSymbols
 import com.elevencapital.core.stock.Stock
 import com.elevencapital.core.stock.StockId
 import com.elevencapital.core.stock.StockQuote
@@ -99,5 +100,19 @@ class MarketFeaturedOrderTest {
             ids(selector.select(catalog, MarketQuery(text = "other"), false)).toSet())
         assertEquals(listOf(remainder[1]),
             selector.select(catalog, MarketQuery(source = MarketSource.PRESTOCKS), false))
+    }
+
+    @Test fun robinhoodTwentyHaveStableVerifiedOrderBeforeRemainingListingsAcrossLaunches() {
+        val listed = RobinhoodFeaturedSymbols.map { row("robinhood:$it", it) }
+        val other = row("robinhood:OTHER", "OTHER")
+        val input = listOf(other) + listed.reversed()
+        repeat(16) { seed ->
+            val selector = MarketRowSelector(MarketFeaturedOrder(Random(seed)))
+            val actual = selector.select(input, MarketQuery(source = MarketSource.ROBINHOOD), false)
+            assertEquals(RobinhoodFeaturedSymbols, actual.take(20).map { it.stock.symbol })
+            assertEquals(other, actual.last())
+            assertEquals(input.size, actual.size)
+            assertEquals(input.map { it.stock.id }.toSet(), actual.map { it.stock.id }.toSet())
+        }
     }
 }

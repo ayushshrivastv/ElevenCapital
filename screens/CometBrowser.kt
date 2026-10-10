@@ -9,15 +9,24 @@ import com.elevencapital.app.wallet.isSolanaPublicKey
 import java.net.URI
 
 private const val COMET_PACKAGE = "ai.perplexity.comet"
+internal const val ROBINHOOD_TESLA_TRANSACTION_URL =
+    "https://robin.etherscan.io/tx/0x93ef1e59b9746546ccd5d727bfeac159fb4de8830418e1129b5dce09ed217cc8"
 
-/** Prefer Comet for Solscan, then use the user's browser if Comet is unavailable. */
+/** Prefer Comet for approved explorer links, then use the user's browser if unavailable. */
 internal fun openPortfolioSolscan(context: Context, url: String): Boolean =
-    openVettedSolscan(context, url, ::isPortfolioSolscanUrl)
+    openVettedUrl(context, url, ::isPortfolioSolscanUrl)
 
 internal fun openPurchaseSolscan(context: Context, url: String): Boolean =
-    openVettedSolscan(context, url, ::isPurchaseSolscanUrl)
+    openVettedUrl(context, url, ::isPurchaseSolscanUrl)
 
-private fun openVettedSolscan(context: Context, url: String, accepts: (String) -> Boolean): Boolean {
+/** Opens only the Robinhood Chain transaction page supplied for the Tesla holding. */
+internal fun openRobinhoodTeslaTransaction(context: Context): Boolean =
+    openVettedUrl(context, ROBINHOOD_TESLA_TRANSACTION_URL, ::isRobinhoodTeslaTransactionUrl)
+
+internal fun isRobinhoodTeslaTransactionUrl(url: String): Boolean =
+    url == ROBINHOOD_TESLA_TRANSACTION_URL
+
+private fun openVettedUrl(context: Context, url: String, accepts: (String) -> Boolean): Boolean {
     if (!accepts(url)) return false
     val uri = Uri.parse(url)
     fun intent(packageName: String?): Intent = Intent(Intent.ACTION_VIEW, uri).apply {
@@ -28,7 +37,7 @@ private fun openVettedSolscan(context: Context, url: String, accepts: (String) -
         context.startActivity(intent(COMET_PACKAGE))
         return true
     } catch (_: ActivityNotFoundException) {
-        // Comet is optional; the same vetted Solscan URL can use the default browser.
+        // Comet is optional; the same vetted URL can use the default browser.
     } catch (_: SecurityException) {
         // A device policy can block explicit browser launches.
     }

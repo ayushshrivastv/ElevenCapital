@@ -1,6 +1,7 @@
 package com.elevencapital.app
 
 import com.elevencapital.app.screens.MarketLogoPrefetchHistory
+import com.elevencapital.app.screens.MarketAssetInterestCache
 import com.elevencapital.app.screens.MarketMovement
 import com.elevencapital.app.screens.MarketQuery
 import com.elevencapital.app.screens.MarketRowSelector
@@ -9,6 +10,7 @@ import com.elevencapital.app.screens.MarketSource
 import com.elevencapital.app.screens.PrimaryStockRow
 import com.elevencapital.app.screens.selectMarketRows
 import com.elevencapital.core.stock.Stock
+import com.elevencapital.core.stock.StockDeployment
 import com.elevencapital.core.stock.StockId
 import com.elevencapital.core.stock.StockLogoReference
 import com.elevencapital.core.stock.StockMarketActivity
@@ -148,6 +150,33 @@ class MarketRowSelectorTest {
         assertEquals(111, requests)
         assertFalse(history.shouldRequest("reference/msft"))
         assertFalse(history.shouldRequest("http://example.com/logo.png"))
+    }
+
+    @Test fun quoteTicksAcrossLargeCatalogDoNotResolveArtworkAgainButExactDeploymentChangesDo() {
+        var resolutions = 0
+        val cache = MarketAssetInterestCache { stock ->
+            resolutions++
+            stock.deployments.singleOrNull()?.address ?: stock.logo?.value
+        }
+        val input = (0 until 2_215).map { index ->
+            row("backpack:$index.US", "S$index.US", "Company $index", "1", "0")
+                .let { it.copy(stock = it.stock.copy(logo = StockLogoReference("https://example.com/$index.png"))) }
+        }
+        val original = cache.get(input)
+        assertEquals(input.size, resolutions)
+        val tick = input.map { it.copy(stock = it.stock.copy(quote = it.stock.quote.copy(
+            price = BigDecimal.TEN, asOf = Instant.EPOCH))) }
+        assertSame(original, cache.get(tick))
+        assertEquals(input.size, resolutions)
+
+        val changed = tick.toMutableList()
+        changed[27] = changed[27].let { it.copy(stock = it.stock.copy(deployments = listOf(
+            StockDeployment("Robinhood Chain", "verified-new-contract", "4663", 18)))) }
+        val next = cache.get(changed)
+        assertEquals(input.size + 1, resolutions)
+        assertEquals("verified-new-contract", next[27].logoUrl)
+        assertSame(original[26], next[26])
+        assertSame(original[28], next[28])
     }
 
     @Test fun logoHistoryIsBoundedAndAllowsRevisitingEvictedArtwork() {

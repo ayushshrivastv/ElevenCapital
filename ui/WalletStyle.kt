@@ -8,6 +8,7 @@ object WalletStyle {
     val Panel = Color(0xFF242422)
     val Circle = Color(0xFF393A36)
     val Cream = Color(0xFFFFFFEF)
+    val BalanceCard = Color(0xFFE7E7E4)
     val White = Color(0xFFFEFEFE)
     val Muted = Color(0xFFAAAAA2)
     val Ink = Color(0xFF080808)

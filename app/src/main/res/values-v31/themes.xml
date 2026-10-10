@@ -8,7 +8,7 @@
         <item name="android:windowBackground">@color/eleven_launcher_background</item>
         <item name="android:colorAccent">#ADF47E</item>
         <item name="android:windowSplashScreenBackground">@color/eleven_launcher_background</item>
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/eleven_empty_splash</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/eleven_splash_mark</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@color/eleven_launcher_background</item>
     </style>
 </resources>
