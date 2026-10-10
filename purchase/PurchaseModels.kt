@@ -6,22 +6,13 @@ import com.elevencapital.core.stock.flow.OrderSide
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.time.Instant
-import org.json.JSONObject
 
 /** Networks that the pinned Privy Android SDK can sign for in this release. */
 enum class PurchaseNetwork(val wireName: String, val chainId: String, val walletChain: WalletChain) {
-    ETHEREUM("ETHEREUM", "1", WalletChain.ETHEREUM),
-    BASE("BASE", "8453", WalletChain.ETHEREUM),
-    ARBITRUM("ARBITRUM", "42161", WalletChain.ETHEREUM),
     SOLANA("SOLANA", "1151111081099710", WalletChain.SOLANA),
     ;
 
-    val displayName: String get() = when (this) {
-        ETHEREUM -> "Ethereum"
-        BASE -> "Base"
-        ARBITRUM -> "Arbitrum"
-        SOLANA -> "Solana"
-    }
+    val displayName: String get() = "Solana"
 
     companion object {
         fun parse(wireName: String, chainId: String): PurchaseNetwork =
@@ -129,47 +120,7 @@ sealed interface PurchaseAction {
     val walletAddress: String
 }
 
-enum class PurchaseActionKind { EVM_APPROVAL, EVM_ROUTE, SOLANA_ROUTE }
-
-data class EvmPurchaseTransaction(
-    val from: String,
-    val to: String,
-    val data: String,
-    val value: String,
-    val gas: String,
-    val gasPrice: String?,
-    val maxFeePerGas: String?,
-    val maxPriorityFeePerGas: String?,
-    val nonce: String?,
-) {
-    /** Raw server JSON is discarded; only the independently validated fields are serialized. */
-    fun rpcJson(chainId: String): String = JSONObject()
-        .put("chainId", "0x" + BigInteger(chainId).toString(16))
-        .put("from", from)
-        .put("to", to)
-        .put("data", data)
-        .put("value", value)
-        .put("gasLimit", gas)
-        .put("type", if (gasPrice != null) "0x0" else "0x2")
-        .also { transaction ->
-            gasPrice?.let { transaction.put("gasPrice", it) }
-            maxFeePerGas?.let { transaction.put("maxFeePerGas", it) }
-            maxPriorityFeePerGas?.let { transaction.put("maxPriorityFeePerGas", it) }
-            nonce?.let { transaction.put("nonce", it) }
-        }
-        .toString()
-}
-
-data class EvmPurchaseAction(
-    override val id: String,
-    override val index: Int,
-    override val kind: PurchaseActionKind,
-    override val network: PurchaseNetwork,
-    override val walletAddress: String,
-    val transaction: EvmPurchaseTransaction,
-) : PurchaseAction {
-    init { require(network != PurchaseNetwork.SOLANA && kind != PurchaseActionKind.SOLANA_ROUTE) }
-}
+enum class PurchaseActionKind { SOLANA_ROUTE }
 
 data class SolanaPurchaseAction(
     override val id: String,
@@ -307,7 +258,7 @@ internal fun String.isSafeStockId(): Boolean {
     if (length !in 3..200 || count { it == ':' } != 1 || any { it.code !in 0x21..0x7e }) return false
     val provider = substringBefore(':')
     val assetId = substringAfter(':')
-    return provider in setOf("backed", "backpack", "prestocks") && assetId.isNotEmpty() &&
+    return provider in setOf("backed", "backpack", "prestocks", "robinhood") && assetId.isNotEmpty() &&
         assetId.all { it.isLetterOrDigit() || it in "_.-" }
 }
 internal fun String.isSafeProtocolId(): Boolean = length in 1..160 && all { it.isLetterOrDigit() || it in "-_:." }

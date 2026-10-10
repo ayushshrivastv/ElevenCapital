@@ -119,7 +119,7 @@ class PurchaseCoordinator internal constructor(
             manuallySelectedPaymentAssetId = null
             mutableState.value = PurchaseUiState(stockId = stockId, phase = PurchasePhase.UNAVAILABLE,
                 message = if (user.walletsReady) "This listing is not available for wallet orders."
-                else "Connect both Eleven wallets to place orders.", side = side)
+                else "Connect your Eleven wallet to place orders.", side = side)
             return
         }
         if (boundWallets == user.wallets && canReusePurchaseState(boundUserId, user.userId, mutableState.value.stockId, stockId,
@@ -286,7 +286,7 @@ class PurchaseCoordinator internal constructor(
             return
         }
         operationJob?.cancel()
-        // A committed order can change balances on either chain. Never reuse its old options.
+        // A committed order can change wallet balances. Never reuse its old options.
         clearOptionsCache()
         mutableState.value = snapshot.copy(phase = PurchasePhase.COMMITTING, quote = quote,
             status = null, message = "Securing your order…")

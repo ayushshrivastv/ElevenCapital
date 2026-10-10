@@ -3,7 +3,6 @@ package com.elevencapital.app.purchase
 import android.util.Base64
 import com.elevencapital.app.auth.UserWallet
 import com.elevencapital.app.auth.WalletChain
-import com.elevencapital.app.wallet.canonicalEthereumAddress
 import com.elevencapital.app.wallet.canonicalSolanaPublicKey
 import com.elevencapital.app.wallet.isCanonicalSolanaSignature
 import com.elevencapital.app.wallet.parseSingleJsonObject
@@ -172,7 +171,7 @@ internal class PurchaseClient internal constructor(
     /** Restart recovery for a provider hash durably saved before its acknowledgement arrived. */
     suspend fun submitted(userId: String, quoteId: String, actionId: String, transactionId: String): PurchaseStatus {
         if (!quoteId.isSafeProtocolId() || !actionId.isSafeProtocolId() ||
-            !(transactionId.matches(Regex("0x[0-9a-f]{64}")) || isCanonicalSolanaSignature(transactionId))) {
+            !isCanonicalSolanaSignature(transactionId)) {
             purchaseProtocolFailure()
         }
         val body = JSONObject().put("schemaVersion", 1).put("transactionId", transactionId)
@@ -322,9 +321,6 @@ private fun PurchaseQuote.requireServerExecutable() {
 object PurchaseProtocol {
     private val decimal = Regex("(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,18})?")
     private val unsigned = Regex("(?:0|[1-9][0-9]*)")
-    private val hexQuantity = Regex("0x(?:0|[1-9a-f][0-9a-f]*)")
-    private val hexData = Regex("0x(?:[0-9a-f]{2})*")
-    private val evmAddress = Regex("0x[0-9a-fA-F]{40}")
     private val maximumU256 = BigInteger.ONE.shiftLeft(256).subtract(BigInteger.ONE)
 
     fun options(source: JSONObject, requestedStockId: String): PurchaseOptions = guarded {
@@ -428,7 +424,7 @@ object PurchaseProtocol {
         val state = try { PurchaseRouteState.valueOf(source.text("state", 16)) } catch (_: Exception) { purchaseProtocolFailure() }
         val transactions = source.array("transactionIds").strings(32, 90)
         transactions.forEach { transaction ->
-            if (!(transaction.matches(Regex("0x[0-9a-f]{64}")) || isCanonicalSolanaSignature(transaction))) purchaseProtocolFailure()
+            if (!isCanonicalSolanaSignature(transaction)) purchaseProtocolFailure()
         }
         val solanaTransactionSignature = if (source.has("solanaTransactionSignature"))
             source.nullableText("solanaTransactionSignature", 90) else null
@@ -455,7 +451,7 @@ object PurchaseProtocol {
         return PurchasePaymentAsset(source.text("id", 160), source.text("symbol", 30), source.text("name", 80),
             network, address, decimals, baseUnits, balance, source.nullableDecimal("usdValue", positive = false),
             source.boolean("enabled"), uiMultiplier).also { asset ->
-                // Privy 0.15.0 provisions EVM and Solana wallets only; Bitcoin is never presented as executable.
+                // Bitcoin is never presented as executable by this Solana-only client.
                 if (asset.symbol == "BTC" && asset.enabled) purchaseProtocolFailure()
             }
     }
@@ -479,73 +475,30 @@ object PurchaseProtocol {
         val canonical = validateAddress(network, wallet, allowNative = false)
         if (network != binding.fromNetwork || canonical !in binding.walletAddresses ||
             source.integer("index").toInt() != expectedIndex) purchaseProtocolFailure()
-        return when (type) {
-            "EVM_APPROVAL", "EVM_ROUTE" -> {
-                source.exactKeys(common + "transaction")
-                if (network == PurchaseNetwork.SOLANA) purchaseProtocolFailure()
-                EvmPurchaseAction(source.text("id", 160), expectedIndex, PurchaseActionKind.valueOf(type), network, canonical,
-                    evmTransaction(source.obj("transaction"), canonical))
-            }
-            "SOLANA_ROUTE" -> {
-                source.exactKeys(common + setOf("transactionBase64", "minContextSlot", "lastValidBlockHeight"))
-                if (network != PurchaseNetwork.SOLANA) purchaseProtocolFailure()
-                val encoded = source.text("transactionBase64", 8_192)
-                val decoded = try { Base64.decode(encoded, Base64.DEFAULT) } catch (_: Exception) { purchaseProtocolFailure() }
-                if (Base64.encodeToString(decoded, Base64.NO_WRAP) != encoded) purchaseProtocolFailure()
-                SolanaPurchaseAction(source.text("id", 160), expectedIndex, PurchaseActionKind.SOLANA_ROUTE, network, canonical, decoded,
-                    source.nullableUnsignedLongString("minContextSlot"),
-                    source.nullableUnsignedLongString("lastValidBlockHeight"))
-            }
-            else -> purchaseProtocolFailure()
-        }
+        if (type != "SOLANA_ROUTE" || network != PurchaseNetwork.SOLANA) purchaseProtocolFailure()
+        source.exactKeys(common + setOf("transactionBase64", "minContextSlot", "lastValidBlockHeight"))
+        val encoded = source.text("transactionBase64", 8_192)
+        val decoded = try { Base64.decode(encoded, Base64.DEFAULT) } catch (_: Exception) { purchaseProtocolFailure() }
+        if (Base64.encodeToString(decoded, Base64.NO_WRAP) != encoded) purchaseProtocolFailure()
+        return SolanaPurchaseAction(source.text("id", 160), expectedIndex, PurchaseActionKind.SOLANA_ROUTE, network, canonical, decoded,
+            source.nullableUnsignedLongString("minContextSlot"),
+            source.nullableUnsignedLongString("lastValidBlockHeight"))
     }
 
-    private fun evmTransaction(source: JSONObject, expectedFrom: String): EvmPurchaseTransaction {
-        source.exactKeys(setOf("from", "to", "data", "value", "gas", "gasPrice", "maxFeePerGas",
-            "maxPriorityFeePerGas", "nonce"))
-        val from = validateAddress(PurchaseNetwork.ETHEREUM, source.text("from", 42), allowNative = false)
-        val to = validateAddress(PurchaseNetwork.ETHEREUM, source.text("to", 42), allowNative = false)
-        if (from != expectedFrom || to.equals(ZERO_ADDRESS, ignoreCase = true)) purchaseProtocolFailure()
-        val data = source.text("data", 131_074).lowercase()
-        if (!hexData.matches(data)) purchaseProtocolFailure()
-        val value = source.hex("value", maximumU256)
-        val gas = source.hex("gas", BigInteger("5000000"))
-        if (BigInteger(gas.substring(2), 16).signum() <= 0) purchaseProtocolFailure()
-        val gasPrice = source.nullableHex("gasPrice", MAX_FEE_PER_GAS)
-        val maxFee = source.nullableHex("maxFeePerGas", MAX_FEE_PER_GAS)
-        val priorityFee = source.nullableHex("maxPriorityFeePerGas", MAX_PRIORITY_FEE)
-        if ((gasPrice == null) == (maxFee == null) || (maxFee != null && priorityFee == null)) purchaseProtocolFailure()
-        val selectedFee = BigInteger((gasPrice ?: maxFee!!).substring(2), 16)
-        if (selectedFee.multiply(BigInteger(gas.substring(2), 16)) > MAX_TOTAL_FEE) purchaseProtocolFailure()
-        return EvmPurchaseTransaction(from, to, data, value, gas, gasPrice, maxFee, priorityFee,
-            source.nullableHex("nonce", BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE)))
-    }
-
-    private fun validateAddress(network: PurchaseNetwork, raw: String, allowNative: Boolean): String = when (network) {
-        PurchaseNetwork.SOLANA -> {
-            if (allowNative && raw == "11111111111111111111111111111111") raw
-            else canonicalSolanaPublicKey(raw) ?: purchaseProtocolFailure()
-        }
-        else -> {
-            if (!evmAddress.matches(raw)) purchaseProtocolFailure()
-            val canonical = canonicalEthereumAddress(raw) ?: purchaseProtocolFailure()
-            if (!allowNative && canonical.equals(ZERO_ADDRESS, ignoreCase = true)) purchaseProtocolFailure()
-            canonical
-        }
+    private fun validateAddress(network: PurchaseNetwork, raw: String, allowNative: Boolean): String {
+        if (network != PurchaseNetwork.SOLANA) purchaseProtocolFailure()
+        return if (allowNative && raw == "11111111111111111111111111111111") raw
+        else canonicalSolanaPublicKey(raw) ?: purchaseProtocolFailure()
     }
 
     private inline fun <T> guarded(block: () -> T): T = try { block() }
     catch (failure: PurchaseException) { throw failure }
     catch (_: Exception) { purchaseProtocolFailure() }
 
-    private val MAX_FEE_PER_GAS = BigInteger("2000000000000")
-    private val MAX_PRIORITY_FEE = BigInteger("10000000000")
-    private val MAX_TOTAL_FEE = BigInteger("100000000000000000") // 0.1 native EVM asset
-    private const val ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 }
 
 private fun walletsJson(wallets: List<UserWallet>): JSONArray {
-    if (wallets.size != 2 || wallets.map { it.chain }.toSet() != WalletChain.entries.toSet()) purchaseProtocolFailure()
+    if (wallets.size != 1 || wallets.single().chain != WalletChain.SOLANA) purchaseProtocolFailure()
     val values = JSONArray()
     wallets.sortedBy { it.chain.ordinal }.forEach { wallet ->
         canonicalWalletAddress(wallet)
@@ -554,9 +507,9 @@ private fun walletsJson(wallets: List<UserWallet>): JSONArray {
     return values
 }
 
-private fun canonicalWalletAddress(wallet: UserWallet): String = when (wallet.chain) {
-    WalletChain.ETHEREUM -> canonicalEthereumAddress(wallet.address) ?: purchaseProtocolFailure()
-    WalletChain.SOLANA -> canonicalSolanaPublicKey(wallet.address) ?: purchaseProtocolFailure()
+private fun canonicalWalletAddress(wallet: UserWallet): String {
+    if (wallet.chain != WalletChain.SOLANA) purchaseProtocolFailure()
+    return canonicalSolanaPublicKey(wallet.address) ?: purchaseProtocolFailure()
 }
 
 private fun JSONObject.version() { if (integer("schemaVersion") != 1L) purchaseProtocolFailure() }
@@ -598,7 +551,6 @@ private fun JSONObject.nullableUnsignedLongString(key: String): Long? = when (ge
     else -> purchaseProtocolFailure()
 }
 private fun JSONObject.array(key: String): JSONArray = get(key) as? JSONArray ?: purchaseProtocolFailure()
-private fun JSONObject.obj(key: String): JSONObject = get(key) as? JSONObject ?: purchaseProtocolFailure()
 private fun JSONObject.nonNegativeDecimal(key: String): BigDecimal {
     val value = text(key, 96)
     if (!PurchaseProtocolDecimal.matches(value)) purchaseProtocolFailure()
@@ -616,17 +568,6 @@ private fun JSONObject.unsigned(key: String, maximum: BigInteger): BigInteger {
     if (!PurchaseProtocolUnsigned.matches(value)) purchaseProtocolFailure()
     return BigInteger(value).takeIf { it <= maximum } ?: purchaseProtocolFailure()
 }
-private fun JSONObject.hex(key: String, maximum: BigInteger): String {
-    val value = text(key, 68).lowercase()
-    if (!PurchaseProtocolHex.matches(value)) purchaseProtocolFailure()
-    if (BigInteger(value.substring(2), 16) > maximum) purchaseProtocolFailure()
-    return value
-}
-private fun JSONObject.nullableHex(key: String, maximum: BigInteger): String? = when (get(key)) {
-    JSONObject.NULL -> null
-    is String -> hex(key, maximum)
-    else -> purchaseProtocolFailure()
-}
 private fun JSONObject.instant(key: String): Instant = try { Instant.parse(text(key, 40)) }
 catch (_: DateTimeParseException) { purchaseProtocolFailure() }
 private fun JSONArray.objects(maximum: Int): List<JSONObject> {
@@ -643,7 +584,6 @@ private fun JSONArray.strings(maximum: Int, maximumLength: Int): List<String> {
 
 private val PurchaseProtocolDecimal = Regex("(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,72})?")
 private val PurchaseProtocolUnsigned = Regex("(?:0|[1-9][0-9]*)")
-private val PurchaseProtocolHex = Regex("0x(?:0|[1-9a-f][0-9a-f]*)")
 
 internal fun displayAmountForRaw(
     rawBaseUnits: BigInteger,

@@ -1,6 +1,7 @@
 package com.elevencapital.app.purchase
 
 import com.elevencapital.core.stock.flow.OrderSide
+import com.elevencapital.app.wallet.encodeBase58
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.time.Instant
@@ -20,7 +21,7 @@ class PurchaseExecutionEngineTest {
         val engine = engine(events, compiledEnabled = false)
 
         val failure = assertThrows(PurchaseException::class.java) {
-            runBlocking { engine.execute(USER, quote(), PurchaseNetwork.ETHEREUM) {} }
+            runBlocking { engine.execute(USER, quote(), PurchaseNetwork.SOLANA) {} }
         }
 
         assertEquals(PurchaseFailureCode.NOT_PURCHASABLE, failure.code)
@@ -33,7 +34,7 @@ class PurchaseExecutionEngineTest {
         val engine = engine(events, compiledEnabled = true)
 
         val failure = assertThrows(PurchaseException::class.java) {
-            runBlocking { engine.execute(USER, quote(executionEnabled = false), PurchaseNetwork.ETHEREUM) {} }
+            runBlocking { engine.execute(USER, quote(executionEnabled = false), PurchaseNetwork.SOLANA) {} }
         }
 
         assertEquals(PurchaseFailureCode.NOT_PURCHASABLE, failure.code)
@@ -57,7 +58,7 @@ class PurchaseExecutionEngineTest {
         val events = mutableListOf<String>()
         val engine = engine(events, compiledEnabled = true)
 
-        engine.execute(USER, quote(), PurchaseNetwork.ETHEREUM) {}
+        engine.execute(USER, quote(), PurchaseNetwork.SOLANA) {}
 
         assertEquals(listOf(
             "journal:begin", "backend:commit", "journal:committed",
@@ -74,7 +75,7 @@ class PurchaseExecutionEngineTest {
             PurchaseFailureCode.WALLET_REJECTED, "Nothing was submitted.", true, providerInvoked = false))
 
         assertThrows(PurchaseException::class.java) {
-            runBlocking { engine.execute(USER, quote(), PurchaseNetwork.ETHEREUM) {} }
+            runBlocking { engine.execute(USER, quote(), PurchaseNetwork.SOLANA) {} }
         }
 
         assertTrue(events.indexOf("backend:invoking:route-1") < events.indexOf("provider:route-1"))
@@ -91,7 +92,7 @@ class PurchaseExecutionEngineTest {
             PurchaseFailureCode.SUBMISSION_UNCERTAIN, "Status only.", false, providerInvoked = true))
 
         val failure = assertThrows(PurchaseException::class.java) {
-            runBlocking { engine.execute(USER, quote(), PurchaseNetwork.ETHEREUM) {} }
+            runBlocking { engine.execute(USER, quote(), PurchaseNetwork.SOLANA) {} }
         }
 
         assertTrue(failure.providerInvoked)
@@ -100,11 +101,11 @@ class PurchaseExecutionEngineTest {
     }
 
     @Test
-    fun `approval must be confirmed before dependent route reaches provider`() = runBlocking {
+    fun `earlier action must be confirmed before the next route reaches provider`() = runBlocking {
         val events = mutableListOf<String>()
         val engine = engine(events, compiledEnabled = true, confirmApprovalOnStatus = true)
 
-        engine.execute(USER, quote(actionCount = 2), PurchaseNetwork.ETHEREUM) {}
+        engine.execute(USER, quote(actionCount = 2), PurchaseNetwork.SOLANA) {}
 
         assertTrue(events.indexOf("backend:status") < events.indexOf("backend:invoking:route-2"))
         assertTrue(events.indexOf("backend:status") < events.indexOf("provider:route-2"))
@@ -157,33 +158,21 @@ class PurchaseExecutionEngineTest {
 
     private fun quote(
         actionCount: Int = 1,
-        network: PurchaseNetwork = PurchaseNetwork.ETHEREUM,
+        network: PurchaseNetwork = PurchaseNetwork.SOLANA,
         executionEnabled: Boolean = true,
     ): PurchaseQuote {
-        require(network == PurchaseNetwork.ETHEREUM || actionCount == 1)
         val actions = (0 until actionCount).map { index ->
             val id = if (index == 0 && actionCount == 1) "route-1" else if (index == 0) "approval-1" else "route-2"
-            if (network == PurchaseNetwork.SOLANA) {
-                SolanaPurchaseAction(id, index, PurchaseActionKind.SOLANA_ROUTE, network,
-                    SOLANA_WALLET, ByteArray(64), null, null)
-            } else {
-                EvmPurchaseAction(
-                    id = id,
-                    index = index,
-                    kind = if (index == 0 && actionCount == 2) PurchaseActionKind.EVM_APPROVAL else PurchaseActionKind.EVM_ROUTE,
-                    network = network,
-                    walletAddress = WALLET,
-                    transaction = EvmPurchaseTransaction(WALLET, TO, "0x", "0x0", "0x5208", "0x1", null, null, null),
-                )
-            }
+            SolanaPurchaseAction(id, index, PurchaseActionKind.SOLANA_ROUTE, network,
+                SOLANA_WALLET, ByteArray(64), null, null)
         }
         return PurchaseQuote(
             id = "quote-1",
-            binding = PurchaseQuoteBinding(OPERATION, USER, STOCK, "ethereum:USDC",
+            binding = PurchaseQuoteBinding(OPERATION, USER, STOCK, "SOLANA:USDC",
                 network, 6, null, BigInteger("100000000"), 50,
-                setOf(if (network == PurchaseNetwork.SOLANA) SOLANA_WALLET else WALLET)),
+                setOf(SOLANA_WALLET)),
             destination = PurchaseDestination("nvda-destination", network,
-                if (network == PurchaseNetwork.SOLANA) SOLANA_DESTINATION else DESTINATION, "NVDAx", 18, true),
+                SOLANA_DESTINATION, "NVDAx", 18, true),
             inputAmount = BigDecimal("100"),
             estimatedOutputAmount = BigDecimal("0.5"),
             executableUnitPriceUsd = BigDecimal("200"),
@@ -248,11 +237,8 @@ class PurchaseExecutionEngineTest {
         const val USER = "did:privy:user-1"
         const val STOCK = "backed:nvda"
         const val OPERATION = "123e4567-e89b-42d3-a456-426614174000"
-        const val WALLET = "0x1111111111111111111111111111111111111111"
-        const val TO = "0x2222222222222222222222222222222222222222"
-        const val DESTINATION = "0x3333333333333333333333333333333333333333"
         const val SOLANA_WALLET = "11111111111111111111111111111111"
         const val SOLANA_DESTINATION = "So11111111111111111111111111111111111111112"
-        const val HASH = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        val HASH = encodeBase58(ByteArray(64) { 5 })
     }
 }

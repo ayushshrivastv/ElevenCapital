@@ -64,7 +64,7 @@ internal class PurchaseJournal(context: Context) : PurchaseExecutionJournalStore
         it.copy(phase = PurchaseJournalPhase.PROVIDER_INVOKED)
     }
 
-    /** Session/network selection failed before eth_sendTransaction/signAndSendTransaction. */
+    /** Session/network selection failed before signAndSendTransaction. */
     @Synchronized
     override fun markProviderNotInvoked(quote: PurchaseQuote, action: PurchaseAction) = update(quote.id) {
         if (it.phase != PurchaseJournalPhase.PROVIDER_INVOKED || it.actionId != action.id ||

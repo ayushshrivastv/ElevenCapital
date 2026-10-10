@@ -53,7 +53,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.boundsInRoot
@@ -122,7 +121,7 @@ fun TradeScreen(
     onEditQuote: () -> Unit = {},
     onRefreshPurchase: () -> Unit = {},
     preview: StockTradePreview? = null,
-    onPreviewPurchase: () -> Unit = {},
+    onPreviewPurchase: (BigDecimal) -> Unit = {},
 ) {
     val uriHandler = LocalUriHandler.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -157,15 +156,18 @@ fun TradeScreen(
     val amount = input.toBigDecimalOrNull() ?: BigDecimal.ZERO
     val orderInputAmount = orderInputAmount(side, amount, selectedAsset)
     val exceedsBalance = orderExceedsBalance(side, amount, selectedAsset, effectiveBalance)
-    // Entry can show a clearly-marked market-price estimate; review always switches to the bound quote.
-    val previewAmountEntered = preview != null && amount.compareTo(preview.inputUsd) == 0
+    // Entry can show a market-price estimate for the amount the buyer entered.
+    val previewTerms = if (preview != null && side == OrderSide.BUY) {
+        previewStockPurchase(stock, amount)
+    } else null
+    val isRobinhoodTeslaPreview = preview != null && isRobinhoodTeslaPreviewStock(stock)
     val receiveEstimate = if (preview != null) {
-        preview.receiveTokens.takeIf { previewAmountEntered }
+        previewTerms?.receiveTokens
     } else displayedQuote?.estimatedOutputAmount ?: if (
         side == OrderSide.BUY && amount.signum() > 0 &&
         (livePurchase == null || livePhase in setOf(PurchasePhase.ENTRY, PurchasePhase.FAILED))
     ) indicativeStockQuantity(amount, stock) else null
-    val receiveIsIndicative = displayedQuote == null && receiveEstimate != null
+    val receiveIsIndicative = displayedQuote == null && receiveEstimate != null && !isRobinhoodTeslaPreview
     val paymentAssets = livePurchase?.options?.paymentAssets.orEmpty()
     val destinations = livePurchase?.options?.destinations.orEmpty()
     val selectedDestination = displayedQuote?.destination ?: livePurchase?.selectedDestination
@@ -186,7 +188,8 @@ fun TradeScreen(
             amount.signum() > 0 && !exceedsBalance &&
             onPurchaseReady != null
     }
-    val canContinue = canContinueNormally && (preview == null || (previewAmountEntered && !preview.processing))
+    val canContinue = canContinueNormally && (preview == null ||
+        (previewTerms != null && !preview.processing))
     val actionLabel = when {
         preview?.processing == true -> "Purchasing…"
         unavailableReason != null && livePhase != PurchasePhase.COMPLETE -> "Order unavailable"
@@ -204,8 +207,8 @@ fun TradeScreen(
         livePurchase != null && livePhase == PurchasePhase.FAILED && amount.signum() > 0 ->
             if (side == OrderSide.BUY) "Purchase" else "Request new quote"
         amount.signum() == 0 -> "Enter amount"
-        preview != null && !previewAmountEntered -> "Enter \$${tradePlain(preview.inputUsd)}"
         exceedsBalance -> "Insufficient ${selectedAsset?.symbol ?: if (side == OrderSide.SELL) stock.symbol else "USDC"} balance"
+        preview != null && previewTerms == null -> "Price unavailable"
         livePurchase != null && orderInputAmount == null ->
             if (side == OrderSide.BUY) "Payment value unavailable" else "Stock balance unavailable"
         side == OrderSide.SELL && livePurchase == null -> "Selling unavailable"
@@ -269,12 +272,14 @@ fun TradeScreen(
                     selectedAsset = selectedAsset,
                     selectedDestination = selectedDestination,
                     receiveAmount = receiveEstimate,
-                    receiveValueUsd = preview?.receiveValueUsd?.takeIf { previewAmountEntered },
+                    receiveValueUsd = previewTerms?.receiveValueUsd.takeUnless { isRobinhoodTeslaPreview },
                     receiveIsIndicative = receiveIsIndicative,
+                    receiveExact = isRobinhoodTeslaPreview,
                     receiveSymbol = displayedQuote?.destination?.symbol
                         ?: stock.symbol.takeIf { receiveEstimate != null && side == OrderSide.BUY },
                     receivePending = when {
                         amount.signum() == 0 -> if (side == OrderSide.BUY) "Enter amount" else "Enter quantity"
+                        preview != null && previewTerms == null -> "Price unavailable"
                         livePhase == PurchasePhase.QUOTING -> "Quote pending"
                         else -> "Quote required"
                     },
@@ -294,6 +299,7 @@ fun TradeScreen(
                     paymentBalance = effectiveBalance,
                     selectedDestination = selectedDestination,
                     destinations = destinations,
+                    receiveNetworkOverride = "Robinhood Chain".takeIf { isRobinhoodTeslaPreview },
                     paymentSelectorEnabled = paymentSelectorEnabled,
                     destinationEnabled = destinationEnabled,
                     onPaymentClick = {
@@ -351,7 +357,7 @@ fun TradeScreen(
                     onInputChange = { input = it },
                     onContinue = {
                         when {
-                            preview != null -> onPreviewPurchase()
+                            preview != null -> onPreviewPurchase(amount)
                             livePurchase == null -> onPurchaseReady?.invoke(amount)
                             side == OrderSide.BUY -> orderInputAmount?.let { onPurchaseNow(tradePlain(it)) }
                             isReview -> onExecutePurchase()
@@ -373,7 +379,7 @@ fun TradeScreen(
             onDismiss = { paymentSelectorVisible = false },
             onSelect = { asset ->
                 if (asset.id != selectedAsset?.id) {
-                    input = "0"
+                    if (preview == null) input = "0"
                     onSelectPaymentAsset(asset.id)
                 }
                 paymentSelectorVisible = false
@@ -561,6 +567,7 @@ internal fun OrderPayReceiveCards(
     receiveAmount: BigDecimal?,
     receiveValueUsd: BigDecimal? = null,
     receiveIsIndicative: Boolean = false,
+    receiveExact: Boolean = false,
     receiveSymbol: String?,
     receivePending: String,
     selectorEnabled: Boolean,
@@ -570,7 +577,7 @@ internal fun OrderPayReceiveCards(
     previewBalanceLabel: String? = null,
 ) {
     val display = tradeDisplayInput(input)
-    val quantity = receiveAmount?.let(::tradeEstimate)
+    val quantity = receiveAmount?.let { if (receiveExact) tradePlain(it) else tradeEstimate(it) }
     val longestAmount = maxOf(display.length, quantity?.length ?: 0)
     val amountSize = when {
         longestAmount <= 7 -> 38f
@@ -626,7 +633,7 @@ internal fun OrderPayReceiveCards(
                         contentDescription = if (receiveValueUsd != null && receiveAmount != null) {
                             "You receive, estimated \$${tradePlain(receiveValueUsd)} worth of ${stock.symbol}, " +
                                 "${tradePlain(receiveAmount)} ${stock.symbol}"
-                        } else "You receive, estimated " +
+                        } else "You receive, ${if (receiveExact) "" else "estimated "}" +
                             (receiveAmount?.let { "${tradePlain(it)} $receiveSymbol" } ?: receivePending)
                     },
             ) {
@@ -639,10 +646,14 @@ internal fun OrderPayReceiveCards(
                 }
                 if (quantity != null && receiveSymbol != null) {
                     CenteredConversionAmount(
-                        receiveValueUsd?.let(::tradePlain) ?: quantity,
-                        if (receiveValueUsd != null) "\$" else if (receiveIsIndicative) "≈" else "",
+                        quantity,
+                        if (receiveIsIndicative) "≈" else "",
                         receiveSymbol, amountSize,
                         Modifier.align(Alignment.Center).offset(y = rd(16f)))
+                    receiveValueUsd?.let { value ->
+                        RefText("≈\$${tradeMoney(value)} at current price", 11f, P.Muted,
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = rd(12f)))
+                    }
                 } else {
                     Column(Modifier.align(Alignment.Center).offset(y = rd(16f)),
                         horizontalAlignment = Alignment.CenterHorizontally) {
@@ -760,6 +771,7 @@ private fun OrderRouteRow(
     paymentBalance: BigDecimal?,
     selectedDestination: PurchaseDestination?,
     destinations: List<PurchaseDestination>,
+    receiveNetworkOverride: String? = null,
     paymentSelectorEnabled: Boolean,
     destinationEnabled: Boolean,
     onPaymentClick: () -> Unit,
@@ -781,7 +793,8 @@ private fun OrderRouteRow(
             Spacer(Modifier.width(rd(38f)))
             if (side == OrderSide.BUY) {
                 StockRouteNode(stock, stockLogoReference, "Receive",
-                    selectedDestination?.network?.displayName ?: destinations.singleOrNull()?.network?.displayName ?: "Best network",
+                    receiveNetworkOverride ?: selectedDestination?.network?.displayName
+                        ?: destinations.singleOrNull()?.network?.displayName ?: "Best network",
                     destinationEnabled, Modifier.weight(1f), onStockClick)
             } else {
                 DestinationRouteNode(selectedDestination, destinationEnabled, Modifier.weight(1f), onStockClick)
@@ -1291,7 +1304,7 @@ private fun PurchaseQuoteCard(state: PurchaseUiState, onEdit: (() -> Unit)?) {
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             RefText(
-                if (BuildConfig.PURCHASE_EXECUTION_ENABLED && quote.executionEnabled) "Final route" else "Route preview",
+                "Order details",
                 16f,
                 P.White,
                 FontWeight.Bold,
@@ -1391,59 +1404,8 @@ private fun PaymentNetworkMark(network: PurchaseNetwork?, markSize: Float, enabl
     Canvas(Modifier.size(rd(markSize)).alpha(markAlpha)) {
         val s = size.minDimension
         val center = Offset(s / 2f, s / 2f)
-        fun polygon(points: List<Offset>): Path = Path().apply {
-            moveTo(points.first().x, points.first().y)
-            points.drop(1).forEach { lineTo(it.x, it.y) }
-            close()
-        }
         when (network) {
-            PurchaseNetwork.SOLANA -> {
-                drawSolanaLogo()
-            }
-            PurchaseNetwork.ETHEREUM -> {
-                drawCircle(Color(0xFF627EEA), s / 2f, center)
-                drawPath(
-                    polygon(
-                        listOf(
-                            Offset(s * .5f, s * .14f),
-                            Offset(s * .28f, s * .52f),
-                            Offset(s * .5f, s * .63f),
-                            Offset(s * .72f, s * .52f),
-                        ),
-                    ),
-                    Color.White,
-                )
-                drawPath(
-                    polygon(
-                        listOf(
-                            Offset(s * .5f, s * .68f),
-                            Offset(s * .29f, s * .57f),
-                            Offset(s * .5f, s * .86f),
-                            Offset(s * .71f, s * .57f),
-                        ),
-                    ),
-                    Color.White.copy(alpha = .82f),
-                )
-            }
-            PurchaseNetwork.BASE -> {
-                drawCircle(Color(0xFF0052FF), s / 2f, center)
-                drawCircle(Color.White, s * .29f, center)
-                drawRect(Color(0xFF0052FF), Offset(s * .50f, s * .19f), Size(s * .36f, s * .62f))
-            }
-            PurchaseNetwork.ARBITRUM -> {
-                drawCircle(Color(0xFF213147), s / 2f, center)
-                val shell = polygon(
-                    listOf(
-                        Offset(s * .50f, s * .10f), Offset(s * .82f, s * .29f),
-                        Offset(s * .82f, s * .68f), Offset(s * .50f, s * .88f),
-                        Offset(s * .18f, s * .68f), Offset(s * .18f, s * .29f),
-                    ),
-                )
-                drawPath(shell, Color(0xFF2D374B))
-                drawLine(Color(0xFF28A0F0), Offset(s * .31f, s * .70f), Offset(s * .52f, s * .29f), s * .11f, StrokeCap.Butt)
-                drawLine(Color(0xFF12AAFF), Offset(s * .48f, s * .76f), Offset(s * .68f, s * .37f), s * .10f, StrokeCap.Butt)
-                drawLine(Color.White, Offset(s * .28f, s * .58f), Offset(s * .45f, s * .25f), s * .075f, StrokeCap.Butt)
-            }
+            PurchaseNetwork.SOLANA -> drawSolanaLogo()
             null -> {
                 drawCircle(P.Chip, s / 2f, center)
                 drawCircle(P.Muted, s * .29f, center, style = Stroke(s * .045f))

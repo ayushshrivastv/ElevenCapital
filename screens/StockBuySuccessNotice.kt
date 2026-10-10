@@ -1,6 +1,7 @@
 package com.elevencapital.app.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,7 +13,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -21,6 +24,7 @@ import com.elevencapital.app.ui.RefText
 import com.elevencapital.app.ui.StockIcon
 import com.elevencapital.app.ui.WalletStyle
 import com.elevencapital.app.ui.rd
+import com.elevencapital.app.R
 import com.elevencapital.core.stock.Stock
 
 /** Transient app-level result; tapping it opens the verified Solscan transaction when available. */
@@ -48,6 +52,31 @@ internal fun StockBuySuccessNotice(
             Modifier.size(rd(43f)).clip(CircleShape).background(WalletStyle.Circle),
             contentAlignment = Alignment.Center,
         ) { StockIcon(stock, 34f) }
+        RefText("Buy Successful", 14f, WalletStyle.White, FontWeight.SemiBold)
+    }
+}
+
+/** Matches the stock result banner for a locally completed creator-token Buy. */
+@Composable
+internal fun CommunityBuySuccessNotice(
+    tokenName: String,
+    modifier: Modifier = Modifier,
+    artworkRes: Int = R.drawable.token_spxtr_christmas,
+) {
+    Row(
+        modifier.clip(CircleShape).background(WalletStyle.Panel)
+            .semantics { contentDescription = "$tokenName buy successful" }
+            .padding(start = rd(5f), end = rd(19f), top = rd(5f), bottom = rd(5f)),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(rd(11f)),
+    ) {
+        Box(
+            Modifier.size(rd(43f)).clip(CircleShape).background(WalletStyle.Circle),
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(painterResource(artworkRes), contentDescription = null,
+                modifier = Modifier.size(rd(34f)).clip(CircleShape), contentScale = ContentScale.Crop)
+        }
         RefText("Buy Successful", 14f, WalletStyle.White, FontWeight.SemiBold)
     }
 }

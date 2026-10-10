@@ -10,34 +10,33 @@ class PurchasePaymentSelectionTest {
         val options = options(
             asset("SOL", "2", "400"),
             asset("USDC", "500", "500"),
-            asset("ETH", "1", "3000", PurchaseNetwork.BASE),
             defaultId = "SOLANA:USDC",
         )
 
-        assertEquals("BASE:ETH", preferredPaymentAssetId(options, OrderSide.BUY))
+        assertEquals("SOLANA:USDC", preferredPaymentAssetId(options, OrderSide.BUY))
         assertEquals("SOLANA:USDC", preferredPaymentAssetId(options, OrderSide.BUY, "SOLANA:USDC"))
     }
 
     @Test fun buyFallsBackToFundedServerChoiceWhenPricesAreUnavailable() {
         val options = options(
             asset("SOL", "3", null),
-            asset("USDC", "40", null, PurchaseNetwork.BASE),
-            defaultId = "BASE:USDC",
+            asset("USDC", "40", null),
+            defaultId = "SOLANA:USDC",
         )
 
-        assertEquals("BASE:USDC", preferredPaymentAssetId(options, OrderSide.BUY))
+        assertEquals("SOLANA:USDC", preferredPaymentAssetId(options, OrderSide.BUY))
     }
 
     @Test fun buyExcludesEmptyAndDisabledHoldingsAndIgnoresUnavailableManualChoice() {
         val options = options(
             asset("SOL", "0", "500"),
-            asset("USDC", "5", "5", PurchaseNetwork.BASE),
-            asset("ETH", "1", "4000", PurchaseNetwork.ETHEREUM, enabled = false),
+            asset("USDC", "5", "5"),
+            asset("BONK", "1", "4000", enabled = false),
             defaultId = "SOLANA:SOL",
         )
 
-        assertEquals("BASE:USDC", preferredPaymentAssetId(options, OrderSide.BUY))
-        assertEquals("BASE:USDC", preferredPaymentAssetId(options, OrderSide.BUY, "ETHEREUM:ETH"))
+        assertEquals("SOLANA:USDC", preferredPaymentAssetId(options, OrderSide.BUY))
+        assertEquals("SOLANA:USDC", preferredPaymentAssetId(options, OrderSide.BUY, "SOLANA:BONK"))
         assertEquals("SOLANA:SOL", preferredPaymentAssetId(options, OrderSide.BUY, "SOLANA:SOL"))
     }
 
@@ -61,12 +60,11 @@ class PurchasePaymentSelectionTest {
         symbol: String,
         balance: String,
         usdValue: String?,
-        network: PurchaseNetwork = PurchaseNetwork.SOLANA,
         enabled: Boolean = true,
     ): PurchasePaymentAsset {
         val amount = BigDecimal(balance)
         return PurchasePaymentAsset(
-            id = "${network.name}:$symbol", symbol = symbol, name = symbol, network = network,
+            id = "SOLANA:$symbol", symbol = symbol, name = symbol, network = PurchaseNetwork.SOLANA,
             address = "native", decimals = 6, balanceBaseUnits = amount.movePointRight(6).toBigIntegerExact(),
             balance = amount, usdValue = usdValue?.let(::BigDecimal), enabled = enabled,
         )
