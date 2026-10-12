@@ -11,16 +11,17 @@
   <img src="https://img.shields.io/badge/Android-Kotlin-7F52FF?logo=kotlin&logoColor=white" alt="Android and Kotlin" />
   <img src="https://img.shields.io/badge/Privy-Embedded%20Wallets-6E5AE6" alt="Privy" />
   <img src="https://img.shields.io/badge/Solana-Settlement-111111?logo=solana&logoColor=white" alt="Solana" />
-  <img src="https://img.shields.io/badge/Arbitrum-Cross--Chain%20Payments-2D9CDB" alt="Ethereum" />
 </p>
 
-Eleven Capital lets people explore tokenized U.S. stocks, ETFs, and private-company exposure from one mobile app. Instead of starting with a bridge, a token address, or a trading venue, an investor starts with the company they want to follow.
+Eleven Capital is a mobile wallet for Solana markets and creator communities. It gives people one place to explore tokenized stocks and tokens, follow charts, and see their balances, holdings, and activity. Finding an asset and keeping track of it should feel like one experience, not a series of trips between a market app and a wallet.
 
-Onchain investing can make a simple decision feel complicated. Funds may be on an EVM network while the security token is on Solana. Listings from different issuers have different terms, and a stock's share price is not always the price of its tokenized counterpart. Moving between wallets, explorers, and swap interfaces leaves users to assemble the transaction for themselves.
+Community brings people closer to the tokens they care about. A creator can give a token its name, artwork, and story. A supporter can open it from a QR code, follow its market page and their position, and find the conversation around it. Eleven is designed to keep that connection visible after the token is discovered. 
 
-Eleven Capital brings the pieces into one journey. Privy connects an embedded EVM wallet and a Solana wallet to the same account. The Stocks page brings Backpack Securities, xStocks, and PreStocks into one catalog. For an admitted order, the app shows the selected payment asset and network, obtains a route, requests wallet authorization, and follows the result through to the Solana wallet.
 
-The backend uses Jupiter for eligible Solana swaps and Relay for a validated Anthropic route paid from Ethereum or Arbitrum. It checks the exact token and receiving wallet rather than treating a quote or source-chain payment as proof of ownership. Portfolio and activity then show the resulting wallet state and transaction evidence.
+Meteora gives creators a way to launch those tokens. Its Dynamic Bonding Curve lets early trading establish a price, instead of requiring a traditional liquidity pool on day one. Eleven turns the launch choices, such as supply, trading fee, and graduation target into a guided mobile flow. The project’s prepared transaction code uses Meteora’s SDK to create the token and its virtual pool, request a wallet signature, and verify the result.
+
+
+As people trade, the price moves along the curve and SOL builds up in the pool. When the chosen target is reached, curve trading ends and the token becomes eligible to move into a DAMM v2 pool for ongoing trading. Eleven already shows live Meteora tokens and market data in the app. The creator launch and purchase journey can currently be explored locally; real mainnet transactions are in the codebase but are not yet enabled in the Android build.
 
 Explore Eleven Capital at [elevencapital.vercel.app](https://elevencapital.vercel.app).
 
