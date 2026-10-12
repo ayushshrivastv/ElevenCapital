@@ -65,13 +65,39 @@ flowchart LR
     RECEIPT --> PORTFOLIO["Portfolio, activity, and Solscan"]
 ```
 
-The catalog preserves each asset's provider, network, and token identity. A ticker or company logo is not enough to authorize a trade. The backend checks that the quote is for the selected asset and wallet, that the payment network is supported for that order, and that the proposed transaction stays within its amount and fee limits.
+## Eleven Capital’s Meteora architecture
 
-For a Solana payment, Jupiter finds the swap route. Native SOL is represented as wrapped SOL inside the transaction; the user does not need to wrap it manually. Eleven Capital checks the transaction's programs, accounts, input, minimum output, and recipient before it reaches Privy for signing.
+Eleven Capital is the mobile home for a creator token from its first launch to an established community. A creator designs the token and its launch in Eleven; Meteora’s Dynamic Bonding Curve (DBC) handles on-chain price discovery; and the creator’s wallet signs the launch on Solana. Supporters can discover the token, buy it, see their position, and join its conversation in the same app. When the launch graduates, the token keeps its identity and Community page while trading moves to Meteora DAMM v2.
 
-For the admitted Anthropic cross-chain route, Relay provides the existing liquidity and settlement contracts. The investor authorizes a source payment on Ethereum or Arbitrum, and the route delivers the specified Anthropic token to the connected Solana wallet. Eleven Capital does not run its own bridge. A source-chain deposit and a Solana delivery are separate events, so the order remains in progress until its destination receipt can be checked.
+```text
+Creator designs token in Eleven
+        ↓
+Wallet signs → Meteora DBC virtual pool → Bonding-curve trading
+                                            ↓ quote threshold reached
+                                      DAMM v2 liquidity pool
 
-The app uses a route only when the specific asset pair, network, liquidity, gas requirement, and transaction validation allow it. The engineering details of deposits, provider commitments, refunds, and receipt checks are in [Smart contracts and cross-chain trading](SMART_CONTRACTS.md).
+Supporter scans QR → Token page → Wallet-signed buy → Tokens + Community → Holder chat
+```
+
+## Creator launch
+
+The creator chooses artwork, a name, ticker, description, and community links. Eleven stores the artwork and token metadata, then presents the launch economics in understandable terms: the starting valuation, curve shape, trading fees, graduation target, token allocation, vesting, and post-graduation liquidity ownership. A simple choice such as *Flat*, *Exponential*, or *Long* is an Eleven design preset translated into Meteora’s configurable curve points—not a separate type of Meteora contract. DBC supports a starting price and up to 16 curve segments. [Meteora’s curve documentation](https://docs.meteora.ag/core-products/dbc/universal-curve)
+
+Eleven validates those choices against a DBC launch configuration and prepares the Solana transaction. The creator reviews and signs it with their wallet. The resulting token mint and DBC pool are the durable identifiers for the launch; the token then appears under the creator’s *Launched Tokens*, with a QR code that opens its Eleven page. The configuration also records how fees, creator allocations, and migrated liquidity are distributed, so those terms are established before trading begins. [Meteora’s launch-configuration documentation](https://docs.meteora.ag/core-products/dbc/launch-configurations)
+
+## From bonding curve to DAMM v2
+
+At launch, the token trades against a DBC *virtual pool*, paired with SOL. Each buy contributes SOL to the pool and moves the price along the creator’s chosen curve; sellers trade against that same pool. Eleven reads the pool’s on-chain price, activity, reserves, and progress to power the token’s chart and launch details. Every buy or sell is reviewed and signed by the user’s wallet, and Eleven updates the position after the Solana transaction is confirmed. [Meteora’s DBC overview](https://docs.meteora.ag/core-products/dbc/what-is-dbc)
+
+Graduation is determined by the pool’s **accumulated quote reserve**, not merely by a displayed market-cap figure. When the configured SOL threshold is reached, normal DBC swaps stop. A migration process then uses the accumulated SOL and allocated tokens to establish a DAMM v2 pool near the price discovered on the curve, applying the configured liquidity locks, vesting, and ownership. Eleven tracks that transition and routes subsequent trading and market data to DAMM v2 once the pool is live. The mint address, QR link, token page, and community remain the same. [Meteora’s migration documentation](https://docs.meteora.ag/core-products/dbc/migration-and-liquidity)
+
+## How the community connects
+
+The Solana mint address is Eleven’s common key for the token’s artwork, launch record, market data, wallet balances, QR link, and chat room. Scanning a creator’s QR opens that token’s page; scanning alone does not imply ownership. After a supporter buys, the confirmed wallet balance places the token in *Tokens* and the creator-token entry in *Community*. Creators see their launches separately from tokens they have bought.
+
+Chat is the social layer around that on-chain ownership. A wallet-authenticated creator can participate in their token’s room, while supporters can post when their wallet holds the token. Others can discover the token and read the conversation. This keeps messages fast and social without putting chat content on-chain, while Solana remains the source of truth for ownership.
+
+In short: **Eleven designs the experience and connects the community; the wallet authorizes each financial action; Meteora DBC runs the launch; DAMM v2 provides the graduated market; and Solana records the token and its ownership.**
 
 <p align="center">
   <!-- Add the stock catalog and purchase screenshots here.
