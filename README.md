@@ -4,7 +4,7 @@
 </p>
 
 <p align="center">
-  <img width="852" height="621" alt="Pasted 2026-09-26 at 17 18 20" src="https://github.com/user-attachments/assets/a0252a4e-f5ec-4252-b081-e9f5801ffe4a" />
+  <img width="852" height="621" alt="Pasted 2026-09-26 at 17 18 20" src="https://github.com/user-attachments/assets/73002f90-11cd-4538-ac06-44c73a0fa292" />
 </p>
 
 <p align="center">
